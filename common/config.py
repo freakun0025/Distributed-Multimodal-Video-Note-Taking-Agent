@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     retry_max_attempts: int = Field(default=5, ge=1)
     retry_delays: Annotated[list[int], NoDecode] = Field(default_factory=lambda: [10, 30, 90])
     outbox_timeout_s: int = Field(default=300, gt=0)
+    healthcheck_timeout_s: float = Field(default=2, gt=0)
 
     # Notion
     notion_client_id: str | None = None

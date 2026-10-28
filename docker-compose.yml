@@ -1,0 +1,190 @@
+# One stack: gateway, broker, state store, limiter and >= 2 workers (Spec §8; ARCHITECTURE §2).
+#   docker compose up -d --build                  core stack, 2 workers
+#   docker compose up -d --scale worker=4         more workers
+#   --profile fakes | gpu | local-llm | observability   optional services
+name: vna
+
+x-app: &app
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    # Overridable from the shell (make up-fakes / up-gpu); otherwise taken from .env.
+    FAKE_APIS: ${FAKE_APIS:-false}
+    STT_ENABLED: ${STT_ENABLED:-false}
+  restart: unless-stopped
+
+x-depends-on-core: &depends-on-core
+  postgres:
+    condition: service_healthy
+  rabbitmq:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+  migrate:
+    condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:16.15-alpine
+    environment:
+      POSTGRES_USER: vna
+      POSTGRES_PASSWORD: vna
+      POSTGRES_DB: vna
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vna -d vna"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4.3.7-management
+    hostname: rabbitmq # node name (and so the data directory) must stay stable across restarts
+    environment:
+      RABBITMQ_DEFAULT_USER: vna
+      RABBITMQ_DEFAULT_PASS: vna
+    volumes:
+      - rabbitdata:/var/lib/rabbitmq
+    ports:
+      - "127.0.0.1:15672:15672" # management UI (demo evidence)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.12-alpine
+    # Token buckets only: ephemeral by design, no persistence (ARCHITECTURE §2).
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    build:
+      context: .
+      dockerfile: docker/gateway.Dockerfile
+    image: vna/gateway:dev
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  gateway:
+    <<: *app
+    build:
+      context: .
+      dockerfile: docker/gateway.Dockerfile
+    image: vna/gateway:dev
+    ports:
+      - "8000:8000"
+    depends_on: *depends-on-core
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=5)"
+      interval: 10s
+      timeout: 6s
+      retries: 6
+      start_period: 10s
+
+  worker:
+    <<: *app
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    image: vna/worker:dev
+    deploy:
+      replicas: 2 # Spec §1.1: >= 2; `--scale worker=N` overrides
+    depends_on: *depends-on-core
+    volumes:
+      - jobdata:/data
+
+  # --- profile: fakes (failure injection, O-1) -------------------------------------------------
+  fakes:
+    <<: *app
+    profiles: ["fakes"]
+    build:
+      context: .
+      dockerfile: docker/fakes.Dockerfile
+    image: vna/fakes:dev
+    ports:
+      - "127.0.0.1:8090:8090" # control endpoint for make fake-429
+
+  # --- profile: gpu (speech-to-text, O-2) ------------------------------------------------------
+  stt:
+    <<: *app
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: docker/stt.Dockerfile
+    image: vna/stt:dev
+    volumes:
+      - whisper:/home/app/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # --- profile: local-llm (O-6) ----------------------------------------------------------------
+  ollama:
+    profiles: ["local-llm"]
+    image: ollama/ollama:0.40.12
+    volumes:
+      - ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # --- profile: observability (O-4) ------------------------------------------------------------
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:v3.15.1
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    profiles: ["observability"]
+    image: grafana/grafana:12.4.14
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  rabbitdata:
+  jobdata:
+  whisper:
+  ollama:
+  prometheus:
+  grafana:

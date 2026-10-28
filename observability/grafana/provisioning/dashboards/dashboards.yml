@@ -1,0 +1,7 @@
+# Dashboard JSON files in this folder are loaded automatically (dashboard itself: M4, O-4).
+apiVersion: 1
+providers:
+  - name: vna
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards
