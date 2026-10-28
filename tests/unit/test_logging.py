@@ -57,14 +57,16 @@ def test_nested_secrets_and_secretstr_values_are_redacted() -> None:
     assert event["key_value"] == REDACTED
 
 
+# Fake secrets are assembled at runtime so no secret-shaped literal sits in the source:
+# GitHub secret scanning flags such literals even when they are obviously fake.
 @pytest.mark.parametrize(
     "secret",
     [
-        "ntn_1234567890abcdefXYZ",
-        "secret_abcdefghijklmnop",
-        "AIzaSyA1234567890abcdefghijklmnopqrstuv",
-        "Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig",
-        "gAAAAABlongfernetciphertextvalue123==",
+        "ntn" + "_" + "x" * 20,
+        "secret" + "_" + "x" * 16,
+        "AI" + "za" + "x" * 35,
+        "Bearer " + "x" * 24,
+        "gAAAA" + "A" + "x" * 30,
     ],
 )
 def test_secret_looking_text_inside_messages_is_scrubbed(secret: str) -> None:

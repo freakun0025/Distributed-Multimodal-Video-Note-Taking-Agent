@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     llm_max_repairs: int = Field(default=1, ge=0)
 
     # Rate limits — keep below the real provider limits
-    llm_rpm: float = Field(default=8, gt=0)
+    llm_rpm: float = Field(default=4, gt=0)
     llm_tpm: int = Field(default=200_000, gt=0)
     notion_rps: float = Field(default=2.5, gt=0)
     youtube_rpm: float = Field(default=30, gt=0)
