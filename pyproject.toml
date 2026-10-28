@@ -1,0 +1,69 @@
+[project]
+name = "video-notes-agent"
+version = "0.1.0"
+description = "Distributed multimodal video note-taking agent: YouTube -> Notion notes with real frames"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.7",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "aio-pika>=9.4",
+    "redis>=5.0",
+    "httpx>=0.27",
+    "youtube-transcript-api>=1.0",
+    "yt-dlp",
+    "google-genai>=1.0",
+    "cryptography>=43",
+    "structlog>=24.1",
+    "prometheus-client>=0.20",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pre-commit>=3.8",
+]
+# Only the stt image installs this (ARCHITECTURE §2: models never load inside workers).
+stt = ["faster-whisper>=1.0"]
+
+[tool.uv]
+package = false
+default-groups = ["dev"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["context", "migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "B", "UP", "ASYNC", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+warn_unused_configs = true
+# common/ is checked with --strict on top of this (CLAUDE.md §6; see `make lint`).
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: needs the Compose stack with the fakes profile (make itest)",
+    "e2e: real YouTube/Gemini/Notion (local only)",
+]

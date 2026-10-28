@@ -1,0 +1,17 @@
+.git
+.github
+context
+CLAUDE.md
+.env
+data
+.venv
+.venv-*
+**/__pycache__
+**/*.pyc
+.mypy_cache
+.ruff_cache
+.pytest_cache
+extension
+tests
+eval
+chaos

@@ -1,1 +1,24 @@
+# Local-only project docs and the course spec — never pushed
 /context
+/CLAUDE.md
+
+# Secrets and runtime data
+.env
+data/
+
+# Python
+.venv/
+.venv-*/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

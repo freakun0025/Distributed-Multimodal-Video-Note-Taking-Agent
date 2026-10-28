@@ -1,0 +1,1 @@
+-- Atomic token bucket: refill by elapsed Redis TIME, take cost; returns 0 or ms to wait (ARCHITECTURE §9).

@@ -1,0 +1,8 @@
+# LF everywhere so scripts and configs work inside Linux containers (ARCHITECTURE §15.1 #12)
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.ico binary

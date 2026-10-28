@@ -1,0 +1,6 @@
+{
+  "manifest_version": 3,
+  "name": "Video Notes Agent",
+  "version": "0.1.0",
+  "description": "Take Notes on a YouTube lecture and get a Notion page with real frames (ARCHITECTURE §11)."
+}
