@@ -54,7 +54,7 @@ async def test_post_returns_202_with_location_and_the_job_is_confirmed_enqueued(
     assert "integration-test-token" not in str(dict(row))
 
 
-async def test_get_job_reports_queued_with_zero_progress(
+async def test_get_job_reports_a_fresh_job_at_the_start_of_the_pipeline(
     submit: Any, gateway: httpx.AsyncClient
 ) -> None:
     job_id = (await submit(json=BODY)).json()["job_id"]
@@ -62,13 +62,13 @@ async def test_get_job_reports_queued_with_zero_progress(
     assert response.status_code == 200
     body = response.json()
     assert body["job_id"] == job_id
-    assert body["progress"] == 0
     assert body["warnings"] == []
     assert body["error"] is None
     assert body["result"] is None
     assert body["waiting"] is None
-    # No consumer yet in M1: the job stays QUEUED. Stub workers arrive at CHECKPOINT 4.
-    assert body["status"] in {"QUEUED", "TRANSCRIBING"}
+    # Workers may already have claimed it: QUEUED at 0 %, or TRANSCRIBING within 5-20 %.
+    assert (body["status"], body["progress"] == 0) in {("QUEUED", True), ("TRANSCRIBING", False)}
+    assert 0 <= body["progress"] <= 20
 
 
 async def test_results_are_409_until_the_job_is_terminal(

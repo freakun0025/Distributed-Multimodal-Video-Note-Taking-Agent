@@ -43,6 +43,19 @@ def retry_routing_key(delay_s: int) -> str:
     return f"retry.{delay_s}s"
 
 
+def retry_delay(retry_delays: Sequence[int], attempt: int, retry_after_s: float | None) -> int:
+    """Delay queue for the retry after failed attempt `attempt` (1-based).
+
+    The schedule gives the delay; attempts past its end reuse the last one. A larger
+    `Retry-After` wins, but queues have fixed TTLs, so it rounds up to the next configured delay,
+    or to the longest one if it exceeds them all (the limiter or the API then answers again).
+    """
+    delays = sorted(set(retry_delays))
+    scheduled = retry_delays[min(max(attempt, 1), len(retry_delays)) - 1]
+    wanted = max(scheduled, retry_after_s or 0)
+    return next((delay for delay in delays if delay >= wanted), delays[-1])
+
+
 def queue_specs(retry_delays: Iterable[int]) -> list[QueueSpec]:
     """Every queue in the topology. Quorum queues throughout (ARCHITECTURE §6.1).
 

@@ -10,6 +10,7 @@ from collections.abc import Mapping, MutableMapping
 from typing import Any
 
 import structlog
+import structlog.tracebacks
 from pydantic import SecretStr
 from structlog.typing import EventDict, FilteringBoundLogger, Processor, WrappedLogger
 
@@ -58,6 +59,13 @@ def redact_secrets(_logger: WrappedLogger, _method: str, event_dict: EventDict) 
     return event_dict
 
 
+# Structured tracebacks WITHOUT local variables: structlog's default `dict_tracebacks` includes
+# every frame's locals, which would put decrypted tokens and keys into the logs.
+_TRACEBACKS = structlog.processors.ExceptionRenderer(
+    structlog.tracebacks.ExceptionDictTransformer(show_locals=False)
+)
+
+
 def _static_fields(service: str) -> Processor:
     worker = socket.gethostname()
 
@@ -77,12 +85,12 @@ def configure_logging(level: str = "INFO", *, service: str) -> None:
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         _static_fields(service),
-        redact_secrets,
     ]
     structlog.configure(
         processors=[
             *shared,
-            structlog.processors.dict_tracebacks,
+            _TRACEBACKS,
+            redact_secrets,  # after tracebacks, so exception messages are scrubbed too
             structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(numeric_level),
@@ -96,7 +104,8 @@ def configure_logging(level: str = "INFO", *, service: str) -> None:
             foreign_pre_chain=shared,
             processors=[
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-                structlog.processors.dict_tracebacks,
+                _TRACEBACKS,
+                redact_secrets,
                 structlog.processors.JSONRenderer(),
             ],
         )

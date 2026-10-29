@@ -12,6 +12,7 @@ from common.broker import (
     PublishFailedError,
     build_message,
     queue_specs,
+    retry_delay,
 )
 from common.models import StageMessage
 from common.state import Stage
@@ -99,3 +100,22 @@ async def test_any_publish_failure_becomes_publish_failed(error: Exception) -> N
     publisher = BrokerPublisher(_Exchange(error), timeout_s=1)  # type: ignore[arg-type]
     with pytest.raises(PublishFailedError):
         await publisher.publish(_message())
+
+
+@pytest.mark.parametrize(
+    ("attempt", "retry_after", "expected"),
+    [
+        (1, None, 10),
+        (2, None, 30),
+        (3, None, 90),
+        (7, None, 90),  # past the schedule: reuse the last delay
+        (1, 25, 30),  # Retry-After rounds up to the next queue
+        (1, 10, 10),
+        (2, 5, 30),  # a smaller Retry-After never shortens the schedule
+        (1, 600, 90),  # beyond every queue: the longest one
+    ],
+)
+def test_retry_delay_follows_the_schedule_and_honours_retry_after(
+    attempt: int, retry_after: float | None, expected: int
+) -> None:
+    assert retry_delay([10, 30, 90], attempt, retry_after) == expected

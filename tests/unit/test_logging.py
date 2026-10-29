@@ -96,3 +96,31 @@ def test_configured_logger_emits_json_with_job_context(capsys: pytest.CaptureFix
     assert ours["notion_token"] == REDACTED
     assert ours["service"] == "test"
     assert stdlib["event"] == "stdlib line"
+
+
+def test_logged_exceptions_carry_no_locals_and_scrubbed_messages(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    token = "ntn" + "_" + "y" * 24
+
+    def call_notion(notion_token: str) -> None:
+        raise RuntimeError(f"request failed for {notion_token}")
+
+    root = logging.getLogger()
+    saved_handlers, saved_level = root.handlers[:], root.level
+    configure_logging("INFO", service="test")
+    try:
+        try:
+            call_notion(token)
+        except RuntimeError:
+            structlog.get_logger().exception("stage_crashed")
+            logging.getLogger("aio_pika").exception("stdlib crash")
+    finally:
+        structlog.reset_defaults()
+        root.handlers, root.level = saved_handlers, saved_level
+    out = capsys.readouterr().out
+    lines = [json.loads(line) for line in out.splitlines() if line]
+    assert [line["event"] for line in lines] == ["stage_crashed", "stdlib crash"]
+    assert all("exception" in line for line in lines)  # tracebacks are still there
+    assert token not in out
+    assert '"locals"' not in out

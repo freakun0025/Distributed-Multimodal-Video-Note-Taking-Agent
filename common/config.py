@@ -83,6 +83,8 @@ class Settings(BaseSettings):
     data_dir: Path = Path("/data")
     fake_apis: bool = False
     log_level: str = "INFO"
+    # M1 stub stages sleep this long; removed once every stage is real (M2).
+    stub_stage_seconds: float = Field(default=3, ge=0)
 
     @field_validator("retry_delays", mode="before")
     @classmethod
