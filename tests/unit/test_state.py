@@ -1,5 +1,10 @@
+from typing import Any
+from uuid import uuid4
+
 import pytest
 
+from common.errors import ErrorCode
+from common.models import ErrorInfo
 from common.state import (
     ALLOWED_FROM,
     NON_TERMINAL_STATUSES,
@@ -13,6 +18,7 @@ from common.state import (
     progress_at,
     status_before,
     status_of,
+    transition,
 )
 
 S = JobStatus
@@ -122,3 +128,26 @@ def test_progress_follows_the_documented_ranges() -> None:
     assert progress_at(S.EXTRACTING_FRAMES, 0.5) == 65
     assert progress_at(S.PUBLISHING, 2.0) == 99  # clamped
     assert progress_at(S.COMPLETED) == 100
+
+
+# transition() rejects bad arguments before touching the database; its SQL is covered by
+# tests/integration/test_transition.py.
+_NO_DB: Any = None
+
+
+async def test_transition_refuses_to_enter_queued() -> None:
+    with pytest.raises(ValueError):
+        await transition(_NO_DB, uuid4(), JobStatus.QUEUED)
+
+
+async def test_transition_allowed_from_may_only_narrow_the_table() -> None:
+    with pytest.raises(ValueError):
+        await transition(_NO_DB, uuid4(), JobStatus.SUMMARIZING, allowed_from={JobStatus.QUEUED})
+
+
+async def test_transition_to_failed_requires_an_error_and_others_reject_one() -> None:
+    error = ErrorInfo(code=ErrorCode.INTERNAL_ERROR, message="x")
+    with pytest.raises(ValueError):
+        await transition(_NO_DB, uuid4(), JobStatus.FAILED)
+    with pytest.raises(ValueError):
+        await transition(_NO_DB, uuid4(), JobStatus.TRANSCRIBING, error=error)

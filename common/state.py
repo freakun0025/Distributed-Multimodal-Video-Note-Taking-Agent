@@ -1,11 +1,22 @@
-"""Job statuses, pipeline stages and the transition table (ARCHITECTURE §5, §6.3, §7).
+"""Job statuses, pipeline stages, the transition table and `transition()` (ARCHITECTURE §5, §7).
 
-`transition()` — the only writer of `jobs.status` — is added in M1 on top of this table.
+`transition()` is the only writer of `jobs.status` (invariant 5).
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from enum import StrEnum
+from typing import TYPE_CHECKING, Any
+from uuid import UUID
+
+from sqlalchemy import func, insert, select, update
+
+if TYPE_CHECKING:
+    from sqlalchemy import ColumnElement
+    from sqlalchemy.ext.asyncio import AsyncConnection
+
+    from common.models import ErrorInfo
 
 
 class JobStatus(StrEnum):
@@ -114,3 +125,85 @@ def progress_at(status: JobStatus, fraction: float = 0.0) -> int:
     low, high = PROGRESS_RANGE[status]
     clamped = min(max(fraction, 0.0), 1.0)
     return round(low + (high - low) * clamped)
+
+
+ERROR_STATUSES: frozenset[JobStatus] = frozenset({JobStatus.FAILED, JobStatus.DEAD_LETTERED})
+
+
+async def transition(
+    conn: AsyncConnection,
+    job_id: UUID,
+    to: JobStatus,
+    *,
+    allowed_from: Iterable[JobStatus] | None = None,
+    progress: int | None = None,
+    error: ErrorInfo | None = None,
+    stage: Stage | None = None,
+    attempt: int | None = None,
+    detail: Mapping[str, Any] | None = None,
+    extra_where: ColumnElement[bool] | None = None,
+) -> JobStatus | None:
+    """Move a job to `to` and append a TRANSITION event, inside the caller's transaction.
+
+    Conditional: `UPDATE jobs ... WHERE id = :id AND status IN (allowed)`. Returns the status the
+    job left, or None when the job is missing or already elsewhere — the caller then treats its
+    message as stale (ARCHITECTURE §7). `allowed_from` may only narrow `ALLOWED_FROM[to]`;
+    `extra_where` adds a predicate (the sweeper requires `enqueued_at IS NULL`). Entering a new
+    status resets `progress` to the start of its range unless `progress` is given; any transition
+    clears the waiting state; terminal statuses set `finished_at`; FAILED / DEAD_LETTERED need
+    `error`.
+    """
+    # Local import: common.db imports JobStatus from this module.
+    from common.db import job_events, jobs
+
+    allowed = ALLOWED_FROM[to] if allowed_from is None else frozenset(allowed_from)
+    if not allowed or not allowed <= ALLOWED_FROM[to]:
+        raise ValueError(f"cannot transition to {to} from {sorted(allowed)}")
+    if (to in ERROR_STATUSES) != (error is not None):
+        raise ValueError("error is required for FAILED / DEAD_LETTERED and only for them")
+
+    # Lock the row so the status we report as `from` is the one we actually replaced.
+    current = await conn.scalar(select(jobs.c.status).where(jobs.c.id == job_id).with_for_update())
+    if current is None or JobStatus(current) not in allowed:
+        return None
+    from_status = JobStatus(current)
+
+    values: dict[str, Any] = {
+        "status": to.value,
+        "updated_at": func.now(),
+        "waiting_until": None,
+        "waiting_reason": None,
+    }
+    if progress is not None:
+        values["progress"] = progress
+    elif to in PROGRESS_RANGE and to != from_status:
+        values["progress"] = progress_at(to)
+    if is_terminal(to):
+        values["finished_at"] = func.now()
+    if error is not None:
+        values["error"] = error.model_dump(mode="json")
+
+    statement = update(jobs).where(
+        jobs.c.id == job_id, jobs.c.status.in_([status.value for status in allowed])
+    )
+    if extra_where is not None:
+        statement = statement.where(extra_where)
+    result = await conn.execute(statement.values(**values))
+    if result.rowcount != 1:
+        return None
+
+    event_detail = dict(detail or {})
+    if error is not None:
+        event_detail["error"] = error.model_dump(mode="json")
+    await conn.execute(
+        insert(job_events).values(
+            job_id=job_id,
+            kind="TRANSITION",
+            from_status=from_status.value,
+            to_status=to.value,
+            stage=stage.value if stage is not None else None,
+            attempt=attempt,
+            detail=event_detail or None,
+        )
+    )
+    return from_status
