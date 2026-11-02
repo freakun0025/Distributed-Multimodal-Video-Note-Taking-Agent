@@ -19,7 +19,7 @@ def test_defaults_match_the_documented_values(monkeypatch: pytest.MonkeyPatch) -
     assert settings.retry_delays == [10, 30, 90]
     assert settings.retry_max_attempts == 5
     assert settings.max_video_seconds == 1200
-    assert settings.llm_model == "gemini-3.6-flash"
+    assert settings.llm_model == "gemini-3.8-flash"
     assert settings.transcript_langs == ["en", "en-US", "en-GB", "hi"]
 
 

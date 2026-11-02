@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # LLM
     llm_provider: LlmProvider = "gemini"
     llm_api_key: SecretStr | None = None
-    llm_model: str = "gemini-3.6-flash"
+    llm_model: str = "gemini-3.8-flash"
     llm_fallback_model: str = "gemini-3.5-flash-lite"
     ollama_url: str = "http://ollama:11434"
     ollama_model: str = "qwen3:8b"
