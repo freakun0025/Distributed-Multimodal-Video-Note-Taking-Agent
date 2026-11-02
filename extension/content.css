@@ -1,0 +1,65 @@
+/* Take Notes button and the on-page toast (ARCHITECTURE §11). Prefixed ids so YouTube styles don't clash. */
+#vna-take-notes {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 6px;
+  cursor: pointer;
+  vertical-align: top;
+}
+
+#vna-take-notes .vna-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  font: 500 13px/1.4 "YouTube Sans", Roboto, Arial, sans-serif;
+  white-space: nowrap;
+}
+
+#vna-take-notes:hover .vna-pill {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+#vna-take-notes:focus-visible .vna-pill {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
+}
+
+#vna-take-notes:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.vna-toast {
+  position: absolute;
+  right: 12px;
+  bottom: 64px;
+  z-index: 2147483647;
+  max-width: 360px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(15, 15, 15, 0.92);
+  color: #fff;
+  font: 400 14px/1.4 Roboto, Arial, sans-serif;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  border-left: 4px solid #3b82f6;
+}
+
+body > .vna-toast {
+  position: fixed;
+  top: 72px;
+  bottom: auto;
+}
+
+.vna-toast-ok {
+  border-left-color: #22c55e;
+}
+
+.vna-toast-error {
+  border-left-color: #ef4444;
+}

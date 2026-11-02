@@ -10,7 +10,7 @@ api ?= llm
 stage ?= EXTRACT_FRAMES
 
 .DEFAULT_GOAL := help
-.PHONY: help up up-fakes up-gpu up-obs down logs migrate lint test itest scale \
+.PHONY: help up up-fakes up-gpu up-obs down logs migrate lint test test-ext itest scale \
         fake-429 kill-worker burst fernet-key
 
 help: ## List commands
@@ -45,6 +45,10 @@ lint: ## ruff + mypy (--strict on common/)
 
 test: ## Unit tests
 	$(UV) run pytest tests/unit
+
+test-ext: ## Extension unit tests (Node's built-in runner, no npm); skipped without node
+	@if command -v node >/dev/null 2>&1; then node --test tests/extension/*.test.mjs; \
+	else echo "node not found: skipping extension tests (install Node 18+ to run them)"; fi
 
 itest: ## Integration tests against the fakes stack (make up-fakes first)
 	$(UV) run pytest -m integration tests/integration

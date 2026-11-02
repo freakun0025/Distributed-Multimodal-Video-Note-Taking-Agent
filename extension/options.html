@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Video Notes — Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <h1>Video Notes — Settings</h1>
+    <form id="form" novalidate>
+      <label for="gateway">Notes server URL</label>
+      <input id="gateway" name="gateway" type="url" autocomplete="off" spellcheck="false">
+      <p class="hint">Where the gateway runs (localhost or 127.0.0.1 only).</p>
+
+      <label for="token">Notion token</label>
+      <input id="token" name="token" type="password" autocomplete="off" spellcheck="false">
+      <p class="hint" id="token-hint">Stored only in this browser and sent with each job; the server never stores it.</p>
+
+      <label for="parent">Notion parent page ID <span class="optional">(optional)</span></label>
+      <input id="parent" name="parent" type="text" autocomplete="off" spellcheck="false">
+      <p class="hint">Leave empty to publish to the server's default page.</p>
+
+      <div class="actions">
+        <button id="save" type="submit">Save</button>
+        <button id="test" type="button" class="secondary">Test connection</button>
+        <button id="forget" type="button" class="secondary">Remove token</button>
+      </div>
+      <p id="status" class="status" role="status"></p>
+    </form>
+  </main>
+  <script src="config.js"></script>
+  <script src="lib/api.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

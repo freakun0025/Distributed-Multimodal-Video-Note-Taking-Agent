@@ -1,5 +1,39 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Video Notes</title><link rel="stylesheet" href="popup.css"></head>
-<body><!-- Popup UI (ARCHITECTURE §11) --><script src="popup.js"></script></body>
+<head>
+  <meta charset="utf-8">
+  <title>Video Notes</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="bar">
+    <h1>Video Notes</h1>
+    <button id="settings" class="link" type="button">Settings</button>
+  </header>
+  <div id="banner" class="banner" role="alert" hidden></div>
+  <main>
+    <p id="empty" class="empty" hidden>No jobs yet. Open a YouTube lecture and click <strong>Take Notes</strong> in the player.</p>
+    <ul id="jobs" class="jobs"></ul>
+  </main>
+  <footer class="bar">
+    <button id="clear" class="link" type="button" hidden>Clear finished</button>
+  </footer>
+  <template id="job-template">
+    <li class="job">
+      <div class="job-head">
+        <a class="job-title" target="_blank" rel="noopener noreferrer"></a>
+        <span class="job-headline"></span>
+      </div>
+      <ol class="steps"></ol>
+      <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="progress-fill"></div></div>
+      <p class="note note-waiting" hidden></p>
+      <p class="note note-warning" hidden></p>
+      <p class="note note-error" hidden></p>
+      <a class="notion" target="_blank" rel="noopener noreferrer" hidden>View in Notion</a>
+    </li>
+  </template>
+  <script src="config.js"></script>
+  <script src="lib/status.js"></script>
+  <script src="popup.js"></script>
+</body>
 </html>

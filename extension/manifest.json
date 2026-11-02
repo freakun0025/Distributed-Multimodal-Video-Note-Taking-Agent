@@ -2,5 +2,26 @@
   "manifest_version": 3,
   "name": "Video Notes Agent",
   "version": "0.1.0",
-  "description": "Take Notes on a YouTube lecture and get a Notion page with real frames (ARCHITECTURE §11)."
+  "description": "Take Notes on a YouTube lecture and get a Notion page with real frames from the video.",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["config.js", "lib/video.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Video Notes",
+    "default_popup": "popup.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
 }
