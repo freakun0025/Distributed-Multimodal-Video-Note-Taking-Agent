@@ -10,6 +10,7 @@ from common.config import Settings
 from common.logging import get_logger
 from common.models import StageMessage
 from common.state import JobStatus, Stage
+from tests.unit.fakes import FakeLimiter
 from worker.artifacts import write_json, write_json_atomic
 from worker.context import JobRecord, StageContext, StageOutcome
 from worker.stages import STAGES
@@ -19,7 +20,11 @@ def test_every_stage_has_an_implementation() -> None:
     assert set(STAGES) == set(Stage)
 
 
-@pytest.mark.parametrize("stage", list(Stage))
+# Stages still stubbed; each real stage drops out of this list as it lands (ROADMAP M2).
+STUB_STAGES = [Stage.EXTRACT_FRAMES, Stage.PUBLISH]
+
+
+@pytest.mark.parametrize("stage", STUB_STAGES)
 async def test_stub_stage_reports_progress_and_writes_its_artefact(
     tmp_path: Path, stage: Stage
 ) -> None:
@@ -49,6 +54,7 @@ async def test_stub_stage_reports_progress_and_writes_its_artefact(
         settings=Settings(_env_file=None, stub_stage_seconds=0),  # type: ignore[call-arg]
         log=get_logger(),
         report_progress=report,
+        limiter=FakeLimiter(),
     )
     outcome = await STAGES[stage](ctx)
     assert progress == [0.25, 0.5, 0.75, 1.0]

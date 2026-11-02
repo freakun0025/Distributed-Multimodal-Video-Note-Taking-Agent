@@ -16,6 +16,7 @@ from common.config import Settings
 from common.errors import ErrorCode, ExternalApi, PermanentError, RetryableError
 from common.models import ErrorInfo, StageMessage
 from common.state import JobStatus, Stage
+from tests.unit.fakes import FakeLimiter
 from worker.context import JobRecord, StageContext, StageFn, StageOutcome
 from worker.runtime import Runtime
 
@@ -174,6 +175,7 @@ async def _handle(
         FakePublisher(events, fail=publish_fails),
         settings,
         dict.fromkeys(Stage, stage_fn),
+        FakeLimiter(),
         worker="worker-a",
     )
     raw = body if body is not None else (message or _message()).to_body()
@@ -195,6 +197,28 @@ async def test_completed_stage_publishes_the_next_stage_and_only_then_acks(
     ]
 
 
+async def test_stages_get_the_workers_shared_limiter(tmp_path: Path) -> None:
+    events: list[Event] = []
+    limiter = FakeLimiter()
+
+    async def stage(ctx: StageContext) -> StageOutcome:
+        await ctx.limiter.acquire(ExternalApi.YOUTUBE)
+        return StageOutcome(summary={})
+
+    settings = Settings(_env_file=None, data_dir=tmp_path)  # type: ignore[call-arg]
+    runtime = Runtime(
+        FakeStore(events, _job()),
+        FakePublisher(events),
+        settings,
+        {Stage.TRANSCRIBE: stage},
+        limiter,
+        worker="w",
+    )
+    await runtime.handle(FakeIncoming(events, _message().to_body()))
+    assert limiter.calls == [(ExternalApi.YOUTUBE, 1)]
+    assert events[-1] == ("ack",)
+
+
 async def test_the_last_stage_finishes_without_publishing(tmp_path: Path) -> None:
     events = await _handle(
         tmp_path=tmp_path, job=_job(JobStatus.EXTRACTING_FRAMES), message=_message(Stage.PUBLISH)
@@ -213,7 +237,7 @@ async def test_message_for_a_missing_job_is_acked_and_dropped(tmp_path: Path) ->
     events: list[Event] = []
     store = FakeStore(events, None)
     settings = Settings(_env_file=None, data_dir=tmp_path)  # type: ignore[call-arg]
-    runtime = Runtime(store, FakePublisher(events), settings, {}, worker="w")
+    runtime = Runtime(store, FakePublisher(events), settings, {}, FakeLimiter(), worker="w")
     await runtime.handle(FakeIncoming(events, _message().to_body()))
     assert events == [("ack",)]
 

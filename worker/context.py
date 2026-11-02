@@ -12,6 +12,7 @@ from uuid import UUID
 from structlog.typing import FilteringBoundLogger
 
 from common.config import Settings
+from common.limiter import Limiter
 from common.models import JobWarning, StageMessage
 from common.state import JobStatus
 
@@ -89,6 +90,7 @@ class StageContext:
     settings: Settings
     log: FilteringBoundLogger
     report_progress: ProgressReporter  # fraction 0..1 of the stage's progress range
+    limiter: Limiter  # acquire before every YouTube / LLM / Notion call (invariant 6)
 
 
 StageFn = Callable[[StageContext], Awaitable[StageOutcome]]

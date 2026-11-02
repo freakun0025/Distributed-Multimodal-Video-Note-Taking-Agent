@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from common.broker import DLQ_ROUTING_KEY, WORK_ROUTING_KEY, retry_delay, retry_routing_key
 from common.config import Settings
 from common.errors import ErrorCode, PermanentError, RetryableError
+from common.limiter import Limiter
 from common.logging import bind_job, clear_job, get_logger
 from common.models import ErrorInfo, StageMessage
 from common.state import (
@@ -62,12 +63,14 @@ class Runtime:
         publisher: Publisher,
         settings: Settings,
         stages: Mapping[Stage, StageFn],
+        limiter: Limiter,
         worker: str,
     ) -> None:
         self._store = store
         self._publisher = publisher
         self._settings = settings
         self._stages = stages
+        self._limiter = limiter
         self._worker = worker
 
     async def handle(self, incoming: IncomingMessage) -> None:
@@ -148,6 +151,7 @@ class Runtime:
             settings=self._settings,
             log=log,
             report_progress=lambda fraction: self._store.report_progress(job.id, stage, fraction),
+            limiter=self._limiter,
         )
         log.info("stage_started")
         try:

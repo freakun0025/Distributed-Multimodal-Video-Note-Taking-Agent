@@ -10,6 +10,8 @@ from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 LlmProvider = Literal["gemini", "ollama", "fake"]
+# Gemini thinking levels; gemini-3.8-flash rejects "minimal" (ARCHITECTURE §8.2).
+ThinkingLevel = Literal["minimal", "low", "medium", "high"]
 
 # Default LLM_CHUNK_CHARS per provider when the variable is unset (ARCHITECTURE §8.2, §12).
 _DEFAULT_CHUNK_CHARS: dict[str, int] = {"gemini": 60_000, "ollama": 12_000, "fake": 12_000}
@@ -35,17 +37,29 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr | None = None
     llm_model: str = "gemini-3.8-flash"
     llm_fallback_model: str = "gemini-3.5-flash-lite"
+    # Earlier attempts wait out a busy primary model (5xx/timeout) through the delay queues;
+    # from this attempt on, an overloaded primary hands over to LLM_FALLBACK_MODEL (D31).
+    llm_fallback_from_attempt: int = Field(default=3, ge=1)
     ollama_url: str = "http://ollama:11434"
     ollama_model: str = "qwen3:8b"
     llm_chunk_chars: int | None = Field(default=None, gt=0)
     llm_max_repairs: int = Field(default=1, ge=0)
+    llm_thinking_level: ThinkingLevel = "low"
+    llm_timeout_s: float = Field(default=120, gt=0)
 
     # Rate limits — keep below the real provider limits
     llm_rpm: float = Field(default=4, gt=0)
     llm_tpm: int = Field(default=200_000, gt=0)
     notion_rps: float = Field(default=2.5, gt=0)
     youtube_rpm: float = Field(default=30, gt=0)
+    # Bucket capacity = allowed burst. LLM 1 + LLM_RPM 4 admits at most 5 calls in any minute.
+    llm_burst: float = Field(default=1, ge=1)
+    notion_burst: float = Field(default=3, ge=1)
+    youtube_burst: float = Field(default=2, ge=1)
+    # Per-request socket timeout for yt-dlp and youtube-transcript-api (neither has one by default).
+    youtube_timeout_s: float = Field(default=30, gt=0)
     limiter_max_wait_s: float = Field(default=20, ge=0)
+    redis_timeout_s: float = Field(default=2, gt=0)
 
     # Retries / DLQ / outbox
     retry_max_attempts: int = Field(default=5, ge=1)
@@ -68,6 +82,8 @@ class Settings(BaseSettings):
     # Pipeline
     max_video_seconds: int = Field(default=1200, gt=0)
     max_frames: int = Field(default=8, ge=0)
+    # Frames closer together than this show the same slide; the later one is dropped.
+    frame_min_gap_s: int = Field(default=10, ge=0)
     transcript_langs: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["en", "en-US", "en-GB", "hi"]
     )
@@ -82,6 +98,8 @@ class Settings(BaseSettings):
     # Runtime
     data_dir: Path = Path("/data")
     fake_apis: bool = False
+    # Where the fakes service listens (profile `fakes`); used only when FAKE_APIS=true.
+    fakes_url: str = "http://fakes:8090"
     log_level: str = "INFO"
     # M1 stub stages sleep this long; removed once every stage is real (M2).
     stub_stage_seconds: float = Field(default=3, ge=0)

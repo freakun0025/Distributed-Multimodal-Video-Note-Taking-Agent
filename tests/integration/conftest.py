@@ -1,6 +1,7 @@
-"""Integration fixtures: talk to the running compose stack from the host (`make up` first).
+"""Integration fixtures: talk to the running compose stack from the host (`make up-fakes` first).
 
-Override the endpoints with ITEST_GATEWAY_URL, ITEST_DATABASE_URL and ITEST_RABBITMQ_API.
+Override the endpoints with ITEST_GATEWAY_URL, ITEST_DATABASE_URL, ITEST_RABBITMQ_API and
+ITEST_FAKES_URL.
 """
 
 from __future__ import annotations
@@ -23,9 +24,21 @@ DATABASE_URL = os.environ.get(
 )
 RABBITMQ_API = os.environ.get("ITEST_RABBITMQ_API", "http://localhost:15672/api")
 RABBITMQ_AUTH = ("vna", "vna")
+FAKES_URL = os.environ.get("ITEST_FAKES_URL", "http://127.0.0.1:8090")
 
 VIDEO_ID = "dQw4w9WgXcQ"
 VIDEO_URL = f"https://www.youtube.com/watch?v={VIDEO_ID}"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def fakes_stack() -> None:
+    """Workers run real stages on every job these tests create: refuse to start unless the fakes
+    service is up, so a plain `make up` stack never spends real YouTube or Gemini quota
+    (ARCHITECTURE §14)."""
+    try:
+        httpx.get(f"{FAKES_URL}/healthz", timeout=3).raise_for_status()
+    except httpx.HTTPError:
+        pytest.fail(f"fakes service not reachable at {FAKES_URL}: run `make up-fakes` first")
 
 
 @pytest.fixture

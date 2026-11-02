@@ -1,4 +1,6 @@
-"""Jobs through the real gateway, broker, Postgres and >= 2 workers running M1 stub stages.
+"""Jobs through the real gateway, broker, Postgres and >= 2 workers. TRANSCRIBE and SUMMARIZE
+run for real against the fakes service (FAKE_APIS=true); EXTRACT_FRAMES and PUBLISH are still
+M1 stubs.
 
 The kill test SIGKILLs a worker container with the docker CLI, so it needs `docker` on PATH.
 """
@@ -21,8 +23,9 @@ from tests.integration.conftest import VIDEO_URL, JobRows
 pytestmark = pytest.mark.integration
 
 BODY = {"youtube_url": VIDEO_URL, "notion_token": "integration-test-token"}
-# Four stub stages of STUB_STAGE_SECONDS each, plus queueing behind other jobs.
-JOB_TIMEOUT_S = 90
+# Fake-backed TRANSCRIBE/SUMMARIZE, two stub stages, queueing behind other jobs, and the LLM
+# limiter spacing calls at LLM_RPM (a waiting job may sit in a 30 s delay queue).
+JOB_TIMEOUT_S = 180
 
 
 async def _submit(gateway: httpx.AsyncClient, job_rows: JobRows) -> UUID:

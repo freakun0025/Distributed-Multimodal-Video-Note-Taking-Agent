@@ -21,6 +21,7 @@ dependencies = [
     "cryptography>=43",
     "structlog>=24.1",
     "prometheus-client>=0.20",
+    "requests>=2.32",
 ]
 
 [dependency-groups]
@@ -52,6 +53,11 @@ python_version = "3.12"
 plugins = ["pydantic.mypy"]
 warn_unused_configs = true
 # common/ is checked with --strict on top of this (CLAUDE.md §6; see `make lint`).
+
+[[tool.mypy.overrides]]
+# yt-dlp ships no type information.
+module = ["yt_dlp", "yt_dlp.*"]
+ignore_missing_imports = true
 
 [tool.pydantic-mypy]
 init_forbid_extra = true
