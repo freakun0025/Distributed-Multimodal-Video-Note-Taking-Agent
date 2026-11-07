@@ -15,9 +15,11 @@ You turn one part of a lecture transcript into study notes.
 Rules:
 - Write every heading, bullet, caption and reason in {language}.
 - Keep the lecture's order. Use short section headings and concise bullet points.
-- Pick at most {max_frames} moments where a slide, diagram, chart, code or whiteboard is most \
-likely on screen, judging from what the speaker says ("as you can see", "this diagram", \
-"on the slide", ...). Fewer is fine; pick none if nothing visual is discussed.
+- Pick between {min_frames} and {max_frames} moments to show as pictures from the video. You \
+only have the transcript, so judge from what is said: prefer moments where the speaker refers \
+to something on screen (a slide, diagram, chart, code, map, whiteboard or demo); where that is \
+rare, pick the start of each main topic or story beat, where a title slide or key visual is \
+most likely. Spread them across this part.
 - For each moment: t_sec is whole seconds from the start of the video and must lie between \
 {start_sec} and {end_sec}; caption says in at most two sentences what is shown; reason says \
 why this moment is worth a picture.
@@ -43,6 +45,7 @@ def synthesis_request(
     total: int,
     *,
     language: str,
+    min_frames: int,
     max_frames: int,
     problem: str | None = None,
 ) -> LlmRequest:
@@ -60,18 +63,21 @@ def synthesis_request(
     return LlmRequest(
         system=SYSTEM.format(
             language=language,
+            min_frames=min_frames,
             max_frames=max_frames,
             start_sec=chunk.start_sec,
             end_sec=chunk.end_sec,
         ),
         prompt=prompt,
-        schema=synthesis_schema(max_frames),
+        schema=synthesis_schema(min_frames, max_frames),
     )
 
 
-def synthesis_schema(max_frames: int) -> dict[str, Any]:
-    """`Synthesis` as a self-contained JSON Schema, frames capped (maxItems is enforced)."""
+def synthesis_schema(min_frames: int, max_frames: int) -> dict[str, Any]:
+    """`Synthesis` as a self-contained JSON Schema; Gemini enforces the frame count bounds
+    (minItems/maxItems), unlike string-length keywords, which it ignores."""
     schema = _inline_refs(Synthesis.model_json_schema())
+    schema["properties"]["frames"]["minItems"] = min_frames
     schema["properties"]["frames"]["maxItems"] = max_frames
     return schema
 

@@ -31,14 +31,17 @@ async def summarize(ctx: StageContext, llm: LlmProvider) -> StageOutcome:
     meta = VideoMeta.model_validate(_read(ctx.job_dir / META_FILE))
     transcript = Transcript.model_validate(_read(ctx.job_dir / TRANSCRIPT_FILE))
     chunks = chunk_transcript(transcript.segments, ctx.settings.effective_llm_chunk_chars)
-    # Spread the frame budget over the parts; the merged result is capped at MAX_FRAMES.
-    frames_per_chunk = math.ceil(ctx.settings.max_frames / len(chunks))
+    # Spread the MIN_FRAMES..MAX_FRAMES budget over the parts; the merged result is capped again.
+    max_per_chunk = math.ceil(ctx.settings.max_frames / len(chunks))
+    min_per_chunk = min(math.ceil(ctx.settings.min_frames / len(chunks)), max_per_chunk)
     dropped = Dropped()
 
     parts: list[Synthesis] = []
     for chunk in chunks:
         parts.append(
-            await _synthesize(ctx, llm, meta, chunk, len(chunks), frames_per_chunk, dropped)
+            await _synthesize(
+                ctx, llm, meta, chunk, len(chunks), (min_per_chunk, max_per_chunk), dropped
+            )
         )
         await ctx.report_progress(len(parts) / len(chunks))
     synthesis = finalize(
@@ -75,7 +78,7 @@ async def _synthesize(
     meta: VideoMeta,
     chunk: Chunk,
     total: int,
-    max_frames: int,
+    frames: tuple[int, int],
     dropped: Dropped,
 ) -> Synthesis:
     """One chunk: ask, validate, and re-prompt up to LLM_MAX_REPAIRS times on unusable output."""
@@ -86,7 +89,8 @@ async def _synthesize(
             chunk,
             total,
             language=ctx.settings.notes_language,
-            max_frames=max_frames,
+            min_frames=frames[0],
+            max_frames=frames[1],
             problem=problem,
         )
         text = await llm.generate_json(request)

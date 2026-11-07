@@ -76,7 +76,8 @@ async def test_notes_are_written_and_frames_requested_recorded(tmp_path: Path) -
     (request,) = llm.requests
     assert "in English" in request.system
     assert "[0:20] line 1 about Raft" in request.prompt
-    assert request.schema["properties"]["frames"]["maxItems"] == 8
+    frames = request.schema["properties"]["frames"]
+    assert (frames["minItems"], frames["maxItems"]) == (3, 8)  # MIN_FRAMES, MAX_FRAMES
 
 
 async def test_unusable_output_is_repaired_once_with_the_problem_stated(tmp_path: Path) -> None:
@@ -133,10 +134,12 @@ async def test_long_transcripts_are_summarised_part_by_part_and_merged_in_order(
     synthesis = _synthesis(ctx)
     assert [s.heading for s in synthesis.sections] == [f"H{i}" for i in range(chunks)]
     assert synthesis.summary.startswith("S0. S1.")
-    # Frame budget spread over the parts (ceil(4 / chunks)); the merged result is capped at 4.
-    assert all(
-        r.schema["properties"]["frames"]["maxItems"] == -(-4 // chunks) for r in llm.requests
-    )
+    # Frame budget spread over the parts (ceil(3 / chunks) .. ceil(4 / chunks)); merged cap 4.
+    bounds = {
+        (r.schema["properties"]["frames"]["minItems"], r.schema["properties"]["frames"]["maxItems"])
+        for r in llm.requests
+    }
+    assert bounds == {(-(-3 // chunks), -(-4 // chunks))}
     assert len(synthesis.frames) <= 4
     assert progress[-1] == 1.0 and progress == sorted(progress)
 

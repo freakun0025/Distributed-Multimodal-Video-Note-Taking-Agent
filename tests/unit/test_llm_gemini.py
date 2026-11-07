@@ -20,7 +20,7 @@ PRIMARY, FALLBACK = "gemini-3.8-flash", "gemini-3.5-flash-lite"
 REQUEST = LlmRequest(
     system="rules",
     prompt="[0:00] intro\n[0:20] the slide\n[0:40] a diagram\n[1:00] summary",
-    schema=synthesis_schema(2),
+    schema=synthesis_schema(1, 2),
 )
 
 Responder = Callable[[httpx.Request], httpx.Response]
@@ -116,6 +116,7 @@ async def test_structured_request_round_trips_through_the_fake_gemini() -> None:
     config = sent[0]["generationConfig"]
     assert config["responseMimeType"] == "application/json"
     assert config["responseJsonSchema"]["properties"]["frames"]["maxItems"] == 2
+    assert config["responseJsonSchema"]["properties"]["frames"]["minItems"] == 1
     assert sent[0]["systemInstruction"]["parts"][0]["text"] == "rules"
     assert limiter.calls == [(ExternalApi.LLM, 1)]
 

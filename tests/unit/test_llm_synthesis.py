@@ -91,11 +91,12 @@ def test_finalize_orders_spaces_and_caps_frames_and_drops_empty_sections() -> No
     assert [s.heading for s in final.sections] == ["Kept"]
 
 
-def test_schema_is_self_contained_and_caps_frames() -> None:
-    schema = synthesis_schema(4)
+def test_schema_is_self_contained_and_bounds_the_frame_count() -> None:
+    schema = synthesis_schema(2, 4)
     assert "$ref" not in json.dumps(schema)
     assert "$defs" not in schema
-    assert schema["properties"]["frames"]["maxItems"] == 4
+    frames = schema["properties"]["frames"]
+    assert (frames["minItems"], frames["maxItems"]) == (2, 4)
     frame = schema["properties"]["frames"]["items"]
     assert set(frame["required"]) == {"t_sec", "caption", "reason"}
 
@@ -103,13 +104,16 @@ def test_schema_is_self_contained_and_caps_frames() -> None:
 def test_the_request_states_language_frame_budget_and_time_window() -> None:
     meta = VideoMeta(video_id="v", title="Distributed Systems 6", duration_sec=1200)
     chunk = Chunk(index=1, start_sec=590, end_sec=1200, lines=("[9:50] so the leader",))
-    request = synthesis_request(meta, chunk, 2, language="Hindi", max_frames=4)
+    request = synthesis_request(meta, chunk, 2, language="Hindi", min_frames=2, max_frames=4)
     assert "in Hindi" in request.system
-    assert "at most 4 moments" in request.system
+    assert "between 2 and 4 moments" in request.system
+    assert "pick none" not in request.system  # every video gets frames (ARCHITECTURE §8.2: 3-8)
     assert "between 590 and 1200" in request.system
     assert "Part 2 of 2, from 9:50 to 20:00" in request.prompt
     assert "[9:50] so the leader" in request.prompt
     assert "could not be used" not in request.prompt
 
-    repair = synthesis_request(meta, chunk, 2, language="Hindi", max_frames=4, problem="bad JSON")
+    repair = synthesis_request(
+        meta, chunk, 2, language="Hindi", min_frames=2, max_frames=4, problem="bad JSON"
+    )
     assert "could not be used (bad JSON)" in repair.prompt

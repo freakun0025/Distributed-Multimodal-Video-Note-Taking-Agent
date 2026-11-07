@@ -45,7 +45,9 @@ class Settings(BaseSettings):
     llm_chunk_chars: int | None = Field(default=None, gt=0)
     llm_max_repairs: int = Field(default=1, ge=0)
     llm_thinking_level: ThinkingLevel = "low"
-    llm_timeout_s: float = Field(default=120, gt=0)
+    # Seen 2026-11-07: gemini-3.8-flash took ~94 s per call (even for a one-word answer) under
+    # high demand; a slow success must not be cut off and retried.
+    llm_timeout_s: float = Field(default=240, gt=0)
 
     # Rate limits — keep below the real provider limits
     llm_rpm: float = Field(default=4, gt=0)
@@ -81,6 +83,8 @@ class Settings(BaseSettings):
 
     # Pipeline
     max_video_seconds: int = Field(default=1200, gt=0)
+    # Frames per job (ARCHITECTURE §8.2: 3-8); the LLM is asked for at least MIN_FRAMES.
+    min_frames: int = Field(default=3, ge=0)
     max_frames: int = Field(default=8, ge=0)
     # Frames closer together than this show the same slide; the later one is dropped.
     frame_min_gap_s: int = Field(default=10, ge=0)
