@@ -88,6 +88,16 @@ class Settings(BaseSettings):
     max_frames: int = Field(default=8, ge=0)
     # Frames closer together than this show the same slide; the later one is dropped.
     frame_min_gap_s: int = Field(default=10, ge=0)
+    # EXTRACT_FRAMES (ARCHITECTURE §8.3, D33): one download at this height, then per pick
+    # FRAME_BURST grabs inside the same second, keeping the least blurry.
+    frames_video_height: int = Field(default=720, gt=0)
+    frame_burst: int = Field(default=3, ge=1)
+    frame_jpeg_quality: int = Field(default=3, ge=2, le=31)  # ffmpeg -q:v, lower is better
+    # Blank frame: mean luma below this (video black is 16 on the 16-235 scale), or almost no
+    # spread between darkest and brightest pixel (a fade to one colour).
+    frame_blank_luma: float = Field(default=24, ge=0)
+    frame_flat_range: float = Field(default=24, ge=0)
+    ffmpeg_timeout_s: float = Field(default=60, gt=0)
     transcript_langs: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["en", "en-US", "en-GB", "hi"]
     )

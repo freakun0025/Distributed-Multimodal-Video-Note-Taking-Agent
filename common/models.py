@@ -218,6 +218,9 @@ class FrameResult(BaseModel):
     t_sec: int = Field(ge=0)
     path: str | None = None
     error: str | None = None
+    # The grab kept from the burst: seconds after t_sec (always < 1) and its blur score.
+    offset_s: float | None = None
+    blur: float | None = None
 
     @model_validator(mode="after")
     def _one_outcome(self) -> FrameResult:

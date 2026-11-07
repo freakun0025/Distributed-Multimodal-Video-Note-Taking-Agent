@@ -1,24 +1,35 @@
 """Fake YouTube/LLM/Notion with switchable 429/5xx/timeouts/frame faults (ARCHITECTURE §14, O-1).
 
 M2 (pulled forward, D29): the happy path `make itest` needs, so integration tests never spend
-real YouTube or Gemini quota — YouTube metadata and captions for any video id, and a
-Gemini-compatible `generateContent` that writes notes from the transcript it is sent. M3 adds
-the failure switches and Notion.
+real YouTube or Gemini quota — YouTube metadata, captions and a video file for any video id,
+and a Gemini-compatible `generateContent` that writes notes from the transcript it is sent. M3
+adds the failure switches and Notion.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import math
 import re
+from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 # Every fake video: a 10-minute lecture with a caption line every 20 s.
 DURATION_S = 600
 CAPTION_EVERY_S = 20
 _LINE = re.compile(r"^\[(?:(\d+):)?(\d+):(\d{2})\] (.*)$", re.MULTILINE)
 _DEFAULT_MAX_FRAMES = 3
+# Generated when the image is built (docker/fakes.Dockerfile): 600 s, a new colour every 20 s.
+VIDEO_PATH = Path(__file__).with_name("video.mp4")
+# Served over about this long, like a real download, so EXTRACT_FRAMES has an observable
+# window (the kill-a-worker test waits for it).
+VIDEO_STREAM_SECONDS = 4.0
+_VIDEO_CHUNK = 256 * 1024
 
 app = FastAPI(title="vna fakes", docs_url=None, redoc_url=None)
 
@@ -55,6 +66,23 @@ async def youtube_captions(video_id: str) -> dict[str, Any]:
         for n, start in enumerate(range(0, DURATION_S, CAPTION_EVERY_S), start=1)
     ]
     return {"language": "en", "segments": segments}
+
+
+@app.get("/youtube/videos/{video_id}/video")
+async def youtube_video_file(video_id: str) -> StreamingResponse:
+    """The fake video, streamed in chunks over VIDEO_STREAM_SECONDS."""
+    if not VIDEO_PATH.exists():
+        raise HTTPException(status_code=404, detail="no fake video in this image")
+    size = VIDEO_PATH.stat().st_size
+    pause = VIDEO_STREAM_SECONDS / max(1, math.ceil(size / _VIDEO_CHUNK))
+
+    async def body() -> AsyncIterator[bytes]:
+        with VIDEO_PATH.open("rb") as handle:
+            while chunk := handle.read(_VIDEO_CHUNK):
+                yield chunk
+                await asyncio.sleep(pause)
+
+    return StreamingResponse(body(), media_type="video/mp4", headers={"content-length": str(size)})
 
 
 # --- LLM: Gemini generateContent -------------------------------------------------------------

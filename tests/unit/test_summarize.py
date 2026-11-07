@@ -13,7 +13,7 @@ from common.state import Stage
 from fakes.app import app as fakes_app
 from tests.unit.fakes import VIDEO_ID, FakeLimiter, make_context
 from worker.artifacts import write_json_atomic
-from worker.clients.youtube import FakesYouTubeClient
+from worker.clients.fakes import FakesYouTubeClient
 from worker.context import StageContext
 from worker.llm.base import LlmRequest
 from worker.llm.gemini import GeminiProvider

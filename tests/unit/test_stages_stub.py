@@ -21,7 +21,7 @@ def test_every_stage_has_an_implementation() -> None:
 
 
 # Stages still stubbed; each real stage drops out of this list as it lands (ROADMAP M2).
-STUB_STAGES = [Stage.EXTRACT_FRAMES, Stage.PUBLISH]
+STUB_STAGES = [Stage.PUBLISH]
 
 
 @pytest.mark.parametrize("stage", STUB_STAGES)

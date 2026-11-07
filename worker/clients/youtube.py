@@ -7,12 +7,13 @@ token first (invariant 6). Failures leave this module only as RetryableError / P
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import re
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol
 
-import httpx
 import requests
 import yt_dlp
 from youtube_transcript_api import (
@@ -46,9 +47,15 @@ from common.limiter import Limiter
 from common.logging import get_logger
 from common.models import Transcript, TranscriptSegment
 
+if TYPE_CHECKING:
+    from worker.clients.fakes import FakesYouTubeClient
+
 API = ExternalApi.YOUTUBE
 _MESSAGE_MAX_CHARS = 200
+_PROGRESS_STEP = 0.05  # report download progress in 5% steps
 log = get_logger()
+
+ProgressFn = Callable[[float], Awaitable[None]]
 
 # yt-dlp error texts (lower-cased) for cases it has no exception type for.
 _BLOCKED_HINTS = ("not a bot", "too many requests", "http error 429")
@@ -70,6 +77,14 @@ _UNAVAILABLE_HINTS = (
 
 def watch_url(video_id: str) -> str:
     return f"https://www.youtube.com/watch?v={video_id}"
+
+
+def finished_download(dest_dir: Path, name: str) -> Path | None:
+    """`<name>.<ext>` once a download is complete; partial files have a further suffix."""
+    pattern = re.compile(rf"^{re.escape(name)}\.[A-Za-z0-9]+$")
+    if not dest_dir.is_dir():
+        return None
+    return next((p for p in sorted(dest_dir.iterdir()) if pattern.match(p.name)), None)
 
 
 @dataclass(frozen=True)
@@ -108,6 +123,76 @@ class YouTubeClient:
         await self._limiter.acquire(API)
         return await asyncio.to_thread(self._fetch_transcript, video_id, list(languages))
 
+    async def download_video(
+        self, video_id: str, dest_dir: Path, *, name: str, max_height: int, progress: ProgressFn
+    ) -> Path:
+        """Download once into `dest_dir/<name>.<ext>` (resumes a partial file after a crash)."""
+        if (done := finished_download(dest_dir, name)) is not None:
+            return done
+        await self._limiter.acquire(API)
+        loop = asyncio.get_running_loop()
+        reports: list[concurrent.futures.Future[None]] = []
+
+        async def forward(fraction: float) -> None:
+            await progress(fraction)
+
+        def report(fraction: float) -> None:  # called from yt-dlp's thread
+            reports.append(asyncio.run_coroutine_threadsafe(forward(fraction), loop))
+
+        try:
+            return await asyncio.to_thread(
+                self._download, video_id, dest_dir, name, max_height, report
+            )
+        finally:
+            await asyncio.gather(*(asyncio.wrap_future(f) for f in reports), return_exceptions=True)
+
+    def _download(
+        self,
+        video_id: str,
+        dest_dir: Path,
+        name: str,
+        max_height: int,
+        report: Callable[[float], None],
+    ) -> Path:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        reported = [0.0]
+
+        def hook(status: dict[str, Any]) -> None:
+            total = status.get("total_bytes") or status.get("total_bytes_estimate")
+            if status.get("status") != "downloading" or not total:
+                return
+            fraction = min(status.get("downloaded_bytes", 0) / total, 1.0)
+            if fraction - reported[0] >= _PROGRESS_STEP:
+                reported[0] = fraction
+                report(fraction)
+
+        h = max_height
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": True,
+            "noplaylist": True,
+            # Video only (frames need no audio); H.264 decodes fastest for ffmpeg seeks.
+            "format": f"bv*[height<={h}][vcodec^=avc1]/bv*[height<={h}]/b[height<={h}]/b",
+            "outtmpl": {"default": str(dest_dir / f"{name}.%(ext)s")},
+            "socket_timeout": self._timeout_s,
+            # A blip mid-download is retried once in place; anything else goes to the delay queues.
+            "retries": 1,
+            "fragment_retries": 1,
+            "continuedl": True,
+            "progress_hooks": [hook],
+            "logger": _YtDlpLogger(),
+        }
+        try:
+            with yt_dlp.YoutubeDL(options) as ydl:
+                ydl.extract_info(watch_url(video_id), download=True)
+        except Exception as exc:
+            raise classify_ytdlp_error(exc) from exc
+        path = finished_download(dest_dir, name)
+        if path is None:
+            raise RetryableError(ErrorCode.UPSTREAM_ERROR, "yt-dlp left no video file", api=API)
+        return path
+
     def _extract_info(self, video_id: str) -> dict[str, Any]:
         options = {
             "quiet": True,
@@ -145,63 +230,11 @@ class YouTubeClient:
         return transcript_from_fetched(fetched)
 
 
-class FakesYouTubeClient:
-    """FAKE_APIS=true: the same two calls against the fakes service (ARCHITECTURE §14).
-
-    Real HTTP status codes from the fake go through classify_http, so injected 429s and 5xx
-    (M3) take the same retry path as YouTube's.
-    """
-
-    def __init__(
-        self,
-        limiter: Limiter,
-        base_url: str,
-        timeout_s: float,
-        http_client: httpx.AsyncClient | None = None,
-    ) -> None:
-        self._limiter = limiter
-        self._base_url = base_url
-        self._timeout_s = timeout_s
-        self._http_client = http_client
-
-    async def video_info(self, video_id: str) -> VideoInfo:
-        data = await self._get(f"/youtube/videos/{video_id}")
-        return video_info_from_ytdlp(video_id, data or {})
-
-    async def transcript(self, video_id: str, languages: Sequence[str]) -> Transcript | None:
-        data = await self._get(f"/youtube/videos/{video_id}/captions", missing_ok=True)
-        if not data:
-            return None
-        segments = [
-            TranscriptSegment(start=s["start"], duration=s["duration"], text=text)
-            for s in data["segments"]
-            if (text := " ".join(str(s["text"]).split()))
-        ]
-        if not segments:
-            return None
-        return Transcript(source="captions", language=data.get("language"), segments=segments)
-
-    async def _get(self, path: str, *, missing_ok: bool = False) -> dict[str, Any] | None:
-        await self._limiter.acquire(API)
-        try:
-            if self._http_client is not None:
-                response = await self._http_client.get(f"{self._base_url}{path}")
-            else:
-                async with httpx.AsyncClient(timeout=self._timeout_s) as http:
-                    response = await http.get(f"{self._base_url}{path}")
-        except Exception as exc:
-            raise classify_exception(API, exc) from exc
-        if missing_ok and response.status_code == 404:
-            return None
-        if response.status_code >= 400:
-            raise classify_http(API, response.status_code, response.headers)
-        data: dict[str, Any] = response.json()
-        return data
-
-
 def video_source(settings: Settings, limiter: Limiter) -> YouTubeClient | FakesYouTubeClient:
     """Real YouTube, or the fakes service when FAKE_APIS=true."""
     if settings.fake_apis:
+        from worker.clients.fakes import FakesYouTubeClient
+
         return FakesYouTubeClient(limiter, settings.fakes_url, settings.youtube_timeout_s)
     return YouTubeClient(limiter, settings.youtube_timeout_s)
 

@@ -16,7 +16,7 @@ dependencies = [
     "redis>=5.0",
     "httpx>=0.27",
     "youtube-transcript-api>=1.0",
-    "yt-dlp",
+    "yt-dlp[default]",  # includes yt-dlp-ejs, the scripts yt-dlp runs in Deno (D32)
     "google-genai>=1.0",
     "cryptography>=43",
     "structlog>=24.1",

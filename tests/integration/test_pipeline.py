@@ -1,6 +1,6 @@
-"""Jobs through the real gateway, broker, Postgres and >= 2 workers. TRANSCRIBE and SUMMARIZE
-run for real against the fakes service (FAKE_APIS=true); EXTRACT_FRAMES and PUBLISH are still
-M1 stubs.
+"""Jobs through the real gateway, broker, Postgres and >= 2 workers. TRANSCRIBE, SUMMARIZE and
+EXTRACT_FRAMES run for real against the fakes service (FAKE_APIS=true); PUBLISH is still an M1
+stub.
 
 The kill test SIGKILLs a worker container with the docker CLI, so it needs `docker` on PATH.
 """
@@ -87,6 +87,17 @@ async def test_job_reaches_completed_through_every_stage(
         row = (await conn.execute(select(jobs).where(jobs.c.id == job_id))).mappings().one()
     assert row["enqueued_at"] is not None
     assert row["finished_at"] is not None
+    # Real frames from the fake video (ffmpeg in the worker): every pick captured.
+    async with engine.connect() as conn:
+        frames = await conn.scalar(
+            select(stage_checkpoints.c.output).where(
+                stage_checkpoints.c.job_id == job_id, stage_checkpoints.c.stage == "EXTRACT_FRAMES"
+            )
+        )
+    assert frames is not None, "no EXTRACT_FRAMES checkpoint"
+    assert frames["frames_requested"] == row["frames_requested"] > 0
+    assert frames["frames_ok"] == frames["frames_requested"]
+    assert frames["failed"] == []
 
 
 async def test_concurrent_jobs_are_shared_between_workers(

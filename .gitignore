@@ -22,3 +22,4 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+fakes/video.mp4
