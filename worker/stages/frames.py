@@ -13,12 +13,11 @@ import json
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Protocol
 
 from common.errors import VnaError, WarningCode
 from common.models import FrameResult, JobWarning, Synthesis
 from worker.artifacts import write_json
-from worker.clients.youtube import ProgressFn, video_source
+from worker.clients.youtube import VideoDownloader, video_source
 from worker.context import StageContext, StageOutcome
 from worker.media import FrameGrabError, Grab, grab_frame, sharpest
 from worker.stages.summarize import SYNTHESIS_FILE
@@ -29,12 +28,6 @@ MANIFEST_FILE = "manifest.json"
 DOWNLOAD_SHARE = 0.6  # of this stage's progress bar; frame grabs fill the rest
 
 Grabber = Callable[..., Awaitable[Grab]]
-
-
-class VideoDownloader(Protocol):
-    async def download_video(
-        self, video_id: str, dest_dir: Path, *, name: str, max_height: int, progress: ProgressFn
-    ) -> Path: ...
 
 
 async def run(ctx: StageContext) -> StageOutcome:

@@ -97,6 +97,14 @@ class VideoInfo:
     language: str | None
 
 
+class VideoDownloader(Protocol):
+    """YouTubeClient and FakesYouTubeClient; EXTRACT_FRAMES and the candidate frames use it."""
+
+    async def download_video(
+        self, video_id: str, dest_dir: Path, *, name: str, max_height: int, progress: ProgressFn
+    ) -> Path: ...
+
+
 class TranscriptTrack(Protocol):
     """One caption track in a youtube-transcript-api TranscriptList."""
 

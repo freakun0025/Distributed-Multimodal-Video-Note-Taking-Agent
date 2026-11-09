@@ -12,14 +12,14 @@ from common.config import Settings
 from common.errors import ErrorCode, ExternalApi, PermanentError, RetryableError
 from fakes.app import app as fakes_app
 from tests.unit.fakes import FakeLimiter
-from worker.llm.base import LlmRequest, make_provider
+from worker.llm.base import LlmRequest, PromptImage, make_provider
 from worker.llm.gemini import GeminiProvider
 from worker.llm.prompts import synthesis_schema
 
 PRIMARY, FALLBACK = "gemini-3.8-flash", "gemini-3.5-flash-lite"
 REQUEST = LlmRequest(
     system="rules",
-    prompt="[0:00] intro\n[0:20] the slide\n[0:40] a diagram\n[1:00] summary",
+    parts=("[0:00] intro\n[0:20] the slide\n[0:40] a diagram\n[1:00] summary",),
     schema=synthesis_schema(1, 2),
 )
 
@@ -119,6 +119,42 @@ async def test_structured_request_round_trips_through_the_fake_gemini() -> None:
     assert config["responseJsonSchema"]["properties"]["frames"]["minItems"] == 1
     assert sent[0]["systemInstruction"]["parts"][0]["text"] == "rules"
     assert limiter.calls == [(ExternalApi.LLM, 1)]
+
+
+async def test_candidate_frames_go_out_as_inline_images_at_the_configured_resolution() -> None:
+    sent: list[dict[str, Any]] = []
+
+    async def record(request: httpx.Request) -> None:
+        sent.append(json.loads(request.content))
+
+    provider = GeminiProvider(
+        FakeLimiter(),
+        api_key="test-key",
+        model=PRIMARY,
+        fallback_model=FALLBACK,
+        thinking_level="low",
+        timeout_s=5,
+        image_resolution="medium",
+        base_url="http://fakes/llm",
+        http_client=httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=fakes_app), event_hooks={"request": [record]}
+        ),
+    )
+    request = LlmRequest(
+        system="rules",
+        parts=(
+            "[0:00] intro\n[0:20] Candidate frame t_sec=20:",
+            PromptImage(data=b"\xff\xd8jpeg"),
+            "\n[0:20] the slide",
+        ),
+        schema=synthesis_schema(1, 2),
+    )
+    notes = json.loads(await provider.generate_json(request))
+    parts = sent[0]["contents"][0]["parts"]
+    assert [sorted(p) for p in parts] == [["text"], ["inlineData", "mediaResolution"], ["text"]]
+    assert parts[1]["inlineData"]["mime_type"] == "image/jpeg"  # as google-genai 2.33 sends it
+    assert parts[1]["mediaResolution"] == {"level": "MEDIA_RESOLUTION_MEDIUM"}
+    assert [f["t_sec"] for f in notes["frames"]] == [20]  # the fake picks among candidates
 
 
 async def test_per_minute_429_is_retryable_with_googles_retry_delay_and_no_fallback() -> None:

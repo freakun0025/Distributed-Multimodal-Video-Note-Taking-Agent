@@ -98,6 +98,14 @@ async def test_job_reaches_completed_through_every_stage(
     assert frames["frames_requested"] == row["frames_requested"] > 0
     assert frames["frames_ok"] == frames["frames_requested"]
     assert frames["failed"] == []
+    # Frame-aware notes (D34): SUMMARIZE showed the LLM real candidate frames (scdet + grabs).
+    async with engine.connect() as conn:
+        notes = await conn.scalar(
+            select(stage_checkpoints.c.output).where(
+                stage_checkpoints.c.job_id == job_id, stage_checkpoints.c.stage == "SUMMARIZE"
+            )
+        )
+    assert notes is not None and notes["candidates"] >= frames["frames_requested"]
 
 
 async def test_concurrent_jobs_are_shared_between_workers(

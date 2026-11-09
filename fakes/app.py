@@ -23,6 +23,7 @@ from fastapi.responses import StreamingResponse
 DURATION_S = 600
 CAPTION_EVERY_S = 20
 _LINE = re.compile(r"^\[(?:(\d+):)?(\d+):(\d{2})\] (.*)$", re.MULTILINE)
+_CANDIDATE = re.compile(r"Candidate frame t_sec=(\d+):")
 _DEFAULT_MAX_FRAMES = 3
 # Generated when the image is built (docker/fakes.Dockerfile): 600 s, a new colour every 20 s.
 VIDEO_PATH = Path(__file__).with_name("video.mp4")
@@ -123,6 +124,7 @@ def notes_from_transcript(prompt: str, max_frames: int) -> dict[str, Any]:
     lines = [
         (int(h or 0) * 3600 + int(m) * 60 + int(s), text.strip())
         for h, m, s, text in _LINE.findall(prompt)
+        if not text.startswith("Candidate frame")  # labels, not spoken lines
     ]
     half = max(1, len(lines) // 2)
     sections = [
@@ -130,8 +132,11 @@ def notes_from_transcript(prompt: str, max_frames: int) -> dict[str, Any]:
         for i, group in enumerate((lines[:half], lines[half:]))
         if group
     ]
-    count = min(max_frames, len(lines))
-    picks = [lines[(i * len(lines)) // count] for i in range(count)] if count else []
+    # Frame-aware prompts (D34) label real frames: pick among those; else among the lines.
+    candidates = [int(t) for t in _CANDIDATE.findall(prompt)]
+    pool = [(t, "") for t in candidates] or lines
+    count = min(max_frames, len(pool))
+    picks = [pool[(i * len(pool)) // count] for i in range(count)] if count else []
     return {
         "title": "Fake lecture notes",
         "summary": f"Fake summary of {len(lines)} transcript lines.",

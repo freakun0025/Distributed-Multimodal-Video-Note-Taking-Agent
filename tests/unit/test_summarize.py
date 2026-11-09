@@ -1,5 +1,6 @@
 """SUMMARIZE stage: ask, validate, repair, merge, write synthesis.json (ARCHITECTURE §8.2)."""
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -13,10 +14,12 @@ from common.state import Stage
 from fakes.app import app as fakes_app
 from tests.unit.fakes import VIDEO_ID, FakeLimiter, make_context
 from worker.artifacts import write_json_atomic
+from worker.candidates import Cut
 from worker.clients.fakes import FakesYouTubeClient
 from worker.context import StageContext
 from worker.llm.base import LlmRequest
 from worker.llm.gemini import GeminiProvider
+from worker.media import Grab
 from worker.stages.summarize import summarize
 from worker.stages.transcribe import transcribe
 
@@ -71,7 +74,7 @@ async def test_notes_are_written_and_frames_requested_recorded(tmp_path: Path) -
     outcome = await summarize(ctx, llm)
 
     assert _synthesis(ctx) == Synthesis.model_validate(VALID)
-    assert outcome.summary == {"chunks": 1, "sections": 1, "frames_requested": 1}
+    assert outcome.summary == {"chunks": 1, "candidates": 0, "sections": 1, "frames_requested": 1}
     assert outcome.job_updates == {"frames_requested": 1}
     (request,) = llm.requests
     assert "in English" in request.system
@@ -179,3 +182,59 @@ async def test_fake_apis_path_end_to_end_in_process(tmp_path: Path) -> None:
         ExternalApi.YOUTUBE,
         ExternalApi.LLM,
     ]
+
+
+class PreviewDownloader:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+
+    async def download_video(
+        self, video_id: str, dest_dir: Path, *, name: str, max_height: int, progress: Any
+    ) -> Path:
+        if self.error:
+            raise self.error
+        path = dest_dir / f"{name}.mp4"
+        await asyncio.to_thread(path.write_bytes, b"preview")
+        return path
+
+
+async def _no_cuts(video: Path, settings: Any) -> list[Cut]:
+    return []
+
+
+async def _grab_ok(video: Path, at_s: float, out: Path, **_: Any) -> Grab:
+    await asyncio.to_thread(out.write_bytes, f"jpeg@{int(at_s)}".encode())
+    return Grab(at_s=at_s, path=out, luma=120, luma_min=20, luma_max=220, blur=4.0)
+
+
+async def test_notes_see_candidate_frames_and_picks_snap_to_them(tmp_path: Path) -> None:
+    progress: list[float] = []
+    # Transcript: 6 lines over 0-120 s of a 600 s video; 30 s slots -> grid at 15, 45, 75, 105...
+    ctx = _context(tmp_path, progress=progress, candidate_max=40, candidate_min_gap_s=30)
+    answer = {**VALID, "frames": [{"t_sec": 46, "caption": "The slide.", "reason": "Key."}]}
+    llm = ScriptedLlm(json.dumps(answer))
+
+    outcome = await summarize(ctx, llm, PreviewDownloader(), detect=_no_cuts, grab=_grab_ok)
+
+    (request,) = llm.requests
+    assert [image.data for image in request.images] == [
+        b"jpeg@15",
+        b"jpeg@45",
+        b"jpeg@75",
+        b"jpeg@105",
+    ]
+    assert "Candidate frame t_sec=45" in request.prompt
+    assert [f.t_sec for f in _synthesis(ctx).frames] == [45]  # 46 snapped to the candidate
+    assert outcome.summary["candidates"] == 20  # made for the whole video; 4 shown to this part
+    assert progress[0] <= 0.3 < progress[-1] == 1.0
+
+
+async def test_without_candidates_the_notes_come_from_the_captions(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    blocked = RetryableError(ErrorCode.RATE_LIMITED, "bot check", api=ExternalApi.YOUTUBE)
+    llm = ScriptedLlm(json.dumps(VALID))
+    outcome = await summarize(ctx, llm, PreviewDownloader(blocked), detect=_no_cuts, grab=_grab_ok)
+    assert llm.requests[0].images == ()
+    assert "only have the transcript" in llm.requests[0].system
+    assert outcome.summary["candidates"] == 0
+    assert _synthesis(ctx) == Synthesis.model_validate(VALID)

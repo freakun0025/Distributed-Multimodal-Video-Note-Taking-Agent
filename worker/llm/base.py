@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from common.config import Settings
@@ -12,10 +12,30 @@ from common.limiter import Limiter
 
 
 @dataclass(frozen=True)
+class PromptImage:
+    """A JPEG shown to the model at its place in the prompt (a candidate frame, D34)."""
+
+    data: bytes = field(repr=False)
+    mime_type: str = "image/jpeg"
+
+
+PromptPart = str | PromptImage
+
+
+@dataclass(frozen=True)
 class LlmRequest:
     system: str  # rules for the model
-    prompt: str  # the transcript part and its context
+    parts: tuple[PromptPart, ...]  # the transcript part and its context, images in place
     schema: Mapping[str, Any]  # JSON Schema the answer must follow (structured output)
+
+    @property
+    def prompt(self) -> str:
+        """The text alone (logs, tests, text-only providers)."""
+        return "".join(part for part in self.parts if isinstance(part, str))
+
+    @property
+    def images(self) -> tuple[PromptImage, ...]:
+        return tuple(part for part in self.parts if isinstance(part, PromptImage))
 
 
 class LlmProvider(Protocol):
@@ -50,6 +70,7 @@ def make_provider(settings: Settings, limiter: Limiter, attempt: int = 1) -> Llm
         fallback_model=settings.llm_fallback_model,
         thinking_level=settings.llm_thinking_level,
         timeout_s=settings.llm_timeout_s,
+        image_resolution=settings.llm_image_resolution,
         fallback_on_overload=attempt >= settings.llm_fallback_from_attempt,
         base_url=base_url,
     )

@@ -6,9 +6,16 @@ from typing import Any
 import pytest
 
 from common.models import FramePick, Section, Synthesis, VideoMeta
+from worker.llm.base import PromptImage
 from worker.llm.chunking import Chunk
-from worker.llm.prompts import synthesis_request, synthesis_schema
-from worker.llm.synthesis import Dropped, InvalidOutputError, finalize, parse_part
+from worker.llm.prompts import CandidateImage, synthesis_request, synthesis_schema
+from worker.llm.synthesis import (
+    Dropped,
+    InvalidOutputError,
+    finalize,
+    parse_part,
+    snap_to_candidates,
+)
 
 CHUNK = Chunk(index=0, start_sec=0, end_sec=300, lines=("[0:00] hello",))
 FRAME = {"t_sec": 61, "caption": "A diagram of Raft.", "reason": "Shows leader election."}
@@ -117,3 +124,51 @@ def test_the_request_states_language_frame_budget_and_time_window() -> None:
         meta, chunk, 2, language="Hindi", min_frames=2, max_frames=4, problem="bad JSON"
     )
     assert "could not be used (bad JSON)" in repair.prompt
+
+
+def test_picks_snap_to_the_candidate_frames_shown_or_are_dropped() -> None:
+    part = Synthesis(
+        title="t",
+        summary="s",
+        sections=[],
+        frames=[FramePick(t_sec=t, caption="c", reason="r") for t in (45, 106, 107, 200)],
+    )
+    dropped = Dropped()
+    snapped = snap_to_candidates(part, [45, 105, 150], tolerance_s=2, dropped=dropped)
+    assert [f.t_sec for f in snapped.frames] == [45, 105]
+    assert dropped.frames == [(107, "same candidate as 105s"), (200, "not a candidate frame")]
+
+
+def test_candidate_frames_sit_in_the_transcript_at_their_time() -> None:
+    meta = VideoMeta(video_id="v", title="Raft", duration_sec=120)
+    chunk = Chunk(
+        index=0,
+        start_sec=0,
+        end_sec=120,
+        lines=("[0:00] intro", "[0:40] the leader", "[1:10] votes"),
+        starts=(0.0, 40.0, 70.0),
+    )
+    images = [CandidateImage(t_sec=45, data=b"B"), CandidateImage(t_sec=15, data=b"A")]
+    request = synthesis_request(
+        meta, chunk, 1, language="English", min_frames=1, max_frames=2, candidates=images
+    )
+    order = [p.data.decode() if isinstance(p, PromptImage) else p for p in request.parts]
+    assert order[1:] == [
+        "A",
+        "\n[0:40] the leader\n[0:45] Candidate frame t_sec=45:",
+        "B",
+        "\n[1:10] votes",
+    ]
+    assert order[0].endswith("[0:00] intro\n[0:15] Candidate frame t_sec=15:")
+    assert request.images == (PromptImage(data=b"A"), PromptImage(data=b"B"))
+    assert 'labelled "Candidate frame t_sec=N"' in request.system
+    assert "between 1 and 2 of these candidates" in request.system
+    assert "only have the transcript" not in request.system
+
+
+def test_without_candidates_the_prompt_is_text_only() -> None:
+    meta = VideoMeta(video_id="v", title="Raft", duration_sec=120)
+    chunk = Chunk(index=0, start_sec=0, end_sec=120, lines=("[0:00] intro",), starts=(0.0,))
+    request = synthesis_request(meta, chunk, 1, language="English", min_frames=3, max_frames=8)
+    assert len(request.parts) == 1 and request.images == ()
+    assert "only have the transcript" in request.system

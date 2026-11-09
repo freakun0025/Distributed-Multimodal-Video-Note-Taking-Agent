@@ -18,7 +18,7 @@ import httpx
 from google import genai
 from google.genai import errors, types
 
-from common.config import ThinkingLevel
+from common.config import ImageResolution, ThinkingLevel
 from common.errors import (
     ErrorCode,
     ExternalApi,
@@ -30,7 +30,7 @@ from common.errors import (
 )
 from common.limiter import Limiter
 from common.logging import get_logger
-from worker.llm.base import LlmRequest
+from worker.llm.base import LlmRequest, PromptImage
 
 API = ExternalApi.LLM
 # Google's "high demand" 503s, other 5xx and hung calls: another model may still answer.
@@ -60,6 +60,7 @@ class GeminiProvider:
         fallback_model: str | None,
         thinking_level: ThinkingLevel,
         timeout_s: float,
+        image_resolution: ImageResolution = "medium",
         fallback_on_overload: bool = False,
         base_url: str | None = None,
         http_client: httpx.AsyncClient | None = None,
@@ -69,6 +70,9 @@ class GeminiProvider:
         self._fallback_model = fallback_model
         self._fallback_on_overload = fallback_on_overload
         self._on_fallback = False  # once switched, the rest of this job uses the fallback
+        self._image_resolution = types.PartMediaResolution(
+            level=types.PartMediaResolutionLevel(f"MEDIA_RESOLUTION_{image_resolution.upper()}")
+        )
         self._thinking = types.ThinkingConfig(
             thinking_level=types.ThinkingLevel(thinking_level.upper())
         )
@@ -131,14 +135,38 @@ class GeminiProvider:
         )
         try:
             response = await self._client.aio.models.generate_content(
-                model=model, contents=request.prompt, config=config
+                model=model,
+                contents=[types.Content(role="user", parts=self._parts(request))],
+                config=config,
             )
         except errors.APIError as exc:
             error = classify_gemini_error(exc)
             raise _ModelFailedError(error, daily_quota=_is_daily_quota(exc)) from exc
         except Exception as exc:  # timeouts, connection errors from httpx
             raise _ModelFailedError(classify_exception(API, exc), daily_quota=False) from exc
+        usage = response.usage_metadata
+        if usage is not None:  # measured, not estimated (CP7b)
+            log.info(
+                "llm_usage",
+                model=model,
+                images=len(request.images),
+                prompt_tokens=usage.prompt_token_count,
+                output_tokens=usage.candidates_token_count,
+                thought_tokens=usage.thoughts_token_count,
+            )
         return response.text or ""
+
+    def _parts(self, request: LlmRequest) -> list[types.Part]:
+        """Text and images in reading order; every image at the configured resolution."""
+        return [
+            types.Part(
+                inline_data=types.Blob(data=part.data, mime_type=part.mime_type),
+                media_resolution=self._image_resolution,
+            )
+            if isinstance(part, PromptImage)
+            else types.Part.from_text(text=part)
+            for part in request.parts
+        ]
 
 
 def classify_gemini_error(exc: errors.APIError) -> VnaError:

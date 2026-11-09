@@ -27,6 +27,7 @@ class Chunk:
     start_sec: int  # first line's start, rounded down
     end_sec: int  # last line's end, rounded up
     lines: tuple[str, ...]
+    starts: tuple[float, ...] = ()  # each line's start in seconds (to place candidate frames)
 
     @property
     def text(self) -> str:
@@ -69,6 +70,7 @@ def chunk_transcript(segments: Sequence[TranscriptSegment], max_chars: int) -> l
             start_sec=math.floor(group[0].start),
             end_sec=math.ceil(max(line.end for line in group)),
             lines=tuple(line.text for line in group),
+            starts=tuple(line.start for line in group),
         )
         for i, group in enumerate(groups)
     ]

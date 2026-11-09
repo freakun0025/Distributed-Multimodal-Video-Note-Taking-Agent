@@ -12,6 +12,8 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 LlmProvider = Literal["gemini", "ollama", "fake"]
 # Gemini thinking levels; gemini-3.8-flash rejects "minimal" (ARCHITECTURE §8.2).
 ThinkingLevel = Literal["minimal", "low", "medium", "high"]
+# Per-image media resolution sent to Gemini (measured 2026-11-08: low 264, medium 527 tokens).
+ImageResolution = Literal["low", "medium", "high"]
 
 # Default LLM_CHUNK_CHARS per provider when the variable is unset (ARCHITECTURE §8.2, §12).
 _DEFAULT_CHUNK_CHARS: dict[str, int] = {"gemini": 60_000, "ollama": 12_000, "fake": 12_000}
@@ -98,6 +100,18 @@ class Settings(BaseSettings):
     frame_blank_luma: float = Field(default=24, ge=0)
     frame_flat_range: float = Field(default=24, ge=0)
     ffmpeg_timeout_s: float = Field(default=60, gt=0)
+    # Frame-aware notes (CP7b, D34): SUMMARIZE shows the LLM up to CANDIDATE_MAX real frames from
+    # a small download — the strongest scene cut per time slot (taken CANDIDATE_SETTLE_S after the
+    # cut, once a transition has settled), else the slot's middle — and picks only among them.
+    candidates_video_height: int = Field(default=480, gt=0)
+    candidate_max: int = Field(default=36, ge=0)  # 0 = captions only
+    candidate_min_gap_s: int = Field(default=15, gt=0)
+    candidate_settle_s: float = Field(default=1.5, ge=0)
+    candidate_jpeg_quality: int = Field(default=5, ge=2, le=31)
+    candidate_snap_s: int = Field(default=2, ge=0)  # a pick this close to a candidate is it
+    scene_threshold: float = Field(default=10, ge=0)  # ffmpeg scdet score for a cut (its default)
+    scene_detect_timeout_s: float = Field(default=180, gt=0)
+    llm_image_resolution: ImageResolution = "medium"
     transcript_langs: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["en", "en-US", "en-GB", "hi"]
     )

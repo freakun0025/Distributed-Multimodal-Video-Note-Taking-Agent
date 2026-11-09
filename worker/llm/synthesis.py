@@ -8,6 +8,7 @@ single bad pick never costs another LLM call: C-B needs every *kept* frame to be
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -54,6 +55,25 @@ def parse_part(text: str, chunk: Chunk, duration_sec: int, dropped: Dropped) -> 
             dropped.add(frame.t_sec, f"outside {chunk.start_sec}..{latest}s")
         else:
             kept.append(frame)
+    return part.model_copy(update={"frames": kept})
+
+
+def snap_to_candidates(
+    part: Synthesis, candidates: Sequence[int], *, tolerance_s: int, dropped: Dropped
+) -> Synthesis:
+    """Every pick becomes the nearest candidate time (within `tolerance_s`) or is dropped, so a
+    frame is always one the model was shown (D34); one pick per candidate."""
+    kept: list[FramePick] = []
+    used: set[int] = set()
+    for frame in part.frames:
+        nearest = min(candidates, key=lambda t: abs(t - frame.t_sec), default=None)
+        if nearest is None or abs(nearest - frame.t_sec) > tolerance_s:
+            dropped.add(frame.t_sec, "not a candidate frame")
+        elif nearest in used:
+            dropped.add(frame.t_sec, f"same candidate as {nearest}s")
+        else:
+            used.add(nearest)
+            kept.append(frame.model_copy(update={"t_sec": nearest}))
     return part.model_copy(update={"frames": kept})
 
 
