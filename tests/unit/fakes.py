@@ -1,5 +1,6 @@
 """Test doubles shared by unit tests."""
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -25,12 +26,41 @@ class FakeLimiter:
         return 0.0
 
 
+class MemoryModelHealth:
+    """In-process ModelHealth: the bench/strike rules of worker.llm.health without Redis."""
+
+    def __init__(self, *, strikes: int = 2, quota_reset_s: float = 3600) -> None:
+        self.strikes_needed = strikes
+        self.quota_reset_s = quota_reset_s
+        self.bench: dict[str, float] = {}  # model -> seconds benched
+        self.strikes: dict[str, int] = {}
+
+    async def benched(self, models: Sequence[str]) -> dict[str, float]:
+        return {model: self.bench[model] for model in models if model in self.bench}
+
+    async def quota_spent(self, model: str) -> float:
+        self.bench[model] = self.quota_reset_s
+        return self.quota_reset_s
+
+    async def overloaded(self, model: str) -> bool:
+        self.strikes[model] = self.strikes.get(model, 0) + 1
+        if self.strikes[model] >= self.strikes_needed:
+            self.bench[model] = 600.0
+            del self.strikes[model]
+            return True
+        return False
+
+    async def answered(self, model: str) -> None:
+        self.strikes.pop(model, None)
+
+
 def make_context(
     tmp_path: Path,
     stage: Stage,
     *,
     progress: list[float] | None = None,
     limiter: FakeLimiter | None = None,
+    model_health: MemoryModelHealth | None = None,
     attempt: int = 1,
     duration_sec: int | None = None,
     **settings: Any,
@@ -63,4 +93,5 @@ def make_context(
         log=get_logger(),
         report_progress=report,
         limiter=limiter or FakeLimiter(),
+        model_health=model_health or MemoryModelHealth(),
     )

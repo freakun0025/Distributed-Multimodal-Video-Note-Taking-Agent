@@ -27,6 +27,7 @@ from common.state import (
     next_stage,
 )
 from worker.context import JobRecord, StageContext, StageFn
+from worker.llm.health import ModelHealth
 from worker.store import JobStore
 
 log = get_logger()
@@ -65,12 +66,15 @@ class Runtime:
         stages: Mapping[Stage, StageFn],
         limiter: Limiter,
         worker: str,
+        *,
+        model_health: ModelHealth,
     ) -> None:
         self._store = store
         self._publisher = publisher
         self._settings = settings
         self._stages = stages
         self._limiter = limiter
+        self._model_health = model_health
         self._worker = worker
 
     async def handle(self, incoming: IncomingMessage) -> None:
@@ -152,6 +156,7 @@ class Runtime:
             log=log,
             report_progress=lambda fraction: self._store.report_progress(job.id, stage, fraction),
             limiter=self._limiter,
+            model_health=self._model_health,
         )
         log.info("stage_started")
         try:

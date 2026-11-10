@@ -10,7 +10,7 @@ from common.config import Settings
 from common.logging import get_logger
 from common.models import StageMessage
 from common.state import JobStatus, Stage
-from tests.unit.fakes import FakeLimiter
+from tests.unit.fakes import FakeLimiter, MemoryModelHealth
 from worker.artifacts import write_json, write_json_atomic
 from worker.context import JobRecord, StageContext, StageOutcome
 from worker.stages import STAGES
@@ -55,6 +55,7 @@ async def test_stub_stage_reports_progress_and_writes_its_artefact(
         log=get_logger(),
         report_progress=report,
         limiter=FakeLimiter(),
+        model_health=MemoryModelHealth(),
     )
     outcome = await STAGES[stage](ctx)
     assert progress == [0.25, 0.5, 0.75, 1.0]

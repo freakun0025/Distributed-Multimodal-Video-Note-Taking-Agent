@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 # Every fake video: a 10-minute lecture with a caption line every 20 s.
 DURATION_S = 600
@@ -38,6 +38,29 @@ app = FastAPI(title="vna fakes", docs_url=None, redoc_url=None)
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"fakes": "ok"}
+
+
+# --- Switches for integration tests (M3 adds 429s, timeouts and frame faults) --------------------
+
+# Models that answer 503 "high demand", as Gemini does under load (model chain test, D36).
+_unavailable_models: set[str] = set()
+# Every generateContent call since the last switch: model and HTTP status, oldest first.
+_llm_calls: list[dict[str, Any]] = []
+HIGH_DEMAND = "This model is currently experiencing high demand. Please try again later."
+
+
+@app.put("/_control/llm")
+async def control_llm(body: dict[str, Any]) -> dict[str, Any]:
+    """Set the models that answer 503 (an empty list: all answer) and clear the call log."""
+    _unavailable_models.clear()
+    _unavailable_models.update(body.get("unavailable", []))
+    _llm_calls.clear()
+    return {"unavailable": sorted(_unavailable_models)}
+
+
+@app.get("/_control/llm/calls")
+async def llm_calls() -> list[dict[str, Any]]:
+    return list(_llm_calls)
 
 
 # --- YouTube ------------------------------------------------------------------------------------
@@ -89,11 +112,18 @@ async def youtube_video_file(video_id: str) -> StreamingResponse:
 # --- LLM: Gemini generateContent -------------------------------------------------------------
 
 
-@app.post("/llm/{api_version}/models/{model_action}")
-async def generate_content(api_version: str, model_action: str, request: Request) -> dict[str, Any]:
+@app.post("/llm/{api_version}/models/{model_action}", response_model=None)
+async def generate_content(
+    api_version: str, model_action: str, request: Request
+) -> dict[str, Any] | JSONResponse:
     model, _, action = model_action.partition(":")
     if action != "generateContent":
         raise HTTPException(status_code=404, detail=f"unknown action {action!r}")
+    if model in _unavailable_models:
+        _llm_calls.append({"model": model, "status": 503})
+        error = {"code": 503, "message": HIGH_DEMAND, "status": "UNAVAILABLE"}
+        return JSONResponse(status_code=503, content={"error": error})
+    _llm_calls.append({"model": model, "status": 200})
     body = await request.json()
     prompt = "\n".join(
         part.get("text", "")

@@ -13,7 +13,7 @@ from common.models import Synthesis, Transcript, TranscriptSegment, VideoMeta
 from common.state import Stage
 from fakes.app import app as fakes_app
 from fakes.app import notes_from_transcript
-from tests.unit.fakes import VIDEO_ID, FakeLimiter, make_context
+from tests.unit.fakes import VIDEO_ID, FakeLimiter, MemoryModelHealth, make_context
 from worker.artifacts import write_json_atomic
 from worker.candidates import Cut
 from worker.clients.fakes import FakesYouTubeClient
@@ -38,6 +38,7 @@ class ScriptedLlm:
     def __init__(self, *answers: str | Exception) -> None:
         self.answers = list(answers)
         self.requests: list[LlmRequest] = []
+        self.answered_by: str | None = "scripted"
 
     async def generate_json(self, request: LlmRequest) -> str:
         self.requests.append(request)
@@ -210,10 +211,8 @@ async def test_fake_apis_path_end_to_end_in_process(tmp_path: Path) -> None:
     llm = GeminiProvider(
         limiter,
         api_key="fake-key",
-        model="gemini-3.8-flash",
-        fallback_model="gemini-3.5-flash-lite",
-        thinking_level="low",
-        timeout_s=5,
+        chain=ctx.settings.llm_chain,
+        health=MemoryModelHealth(),
         base_url="http://fakes/llm",
         http_client=http,
     )

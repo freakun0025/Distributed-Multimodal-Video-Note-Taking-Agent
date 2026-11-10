@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 LlmProvider = Literal["gemini", "ollama", "fake"]
@@ -17,6 +18,49 @@ ImageResolution = Literal["low", "medium", "high"]
 
 # Default LLM_CHUNK_CHARS per provider when the variable is unset (ARCHITECTURE §8.2, §12).
 _DEFAULT_CHUNK_CHARS: dict[str, int] = {"gemini": 60_000, "ollama": 12_000, "fake": 12_000}
+
+
+class LlmModelSpec(BaseModel):
+    """One link of LLM_CHAIN: the model, its thinking level and its per-request timeout."""
+
+    model_config = ConfigDict(frozen=True)
+
+    model: str = Field(min_length=1)
+    thinking: ThinkingLevel
+    timeout_s: float = Field(gt=0)
+
+    @classmethod
+    def parse(cls, entry: str) -> LlmModelSpec:
+        """Parse model:thinking:timeout_s, split from the right so a model id may contain colons
+        (OpenRouter-style ids such as vendor/model:free)."""
+        parts = entry.strip().rsplit(":", 2)
+        if len(parts) != 3:
+            raise ValueError(f"LLM_CHAIN entry {entry!r} is not model:thinking:timeout_s")
+        model, thinking, timeout_s = (part.strip() for part in parts)
+        return cls.model_validate({"model": model, "thinking": thinking, "timeout_s": timeout_s})
+
+    def __str__(self) -> str:
+        return f"{self.model}:{self.thinking}:{self.timeout_s:g}"
+
+
+# Measured on 2026-11-10 (ARCHITECTURE §8.2, D36): 3.6 Flash wrote the best notes in 19-30 s;
+# 3.8 Flash (rejects "minimal") once took ~94 s; Flash-Lite answers in 11-22 s at "medium".
+DEFAULT_LLM_CHAIN = (
+    LlmModelSpec(model="gemini-3.6-flash", thinking="low", timeout_s=90),
+    LlmModelSpec(model="gemini-3.8-flash", thinking="low", timeout_s=120),
+    LlmModelSpec(model="gemini-3.5-flash-lite", thinking="medium", timeout_s=60),
+)
+# Settings replaced by LLM_CHAIN / LLM_STEP_DOWN_FROM_ATTEMPT (D36). Refused if still set, so a
+# stale .env cannot silently run a different chain.
+REPLACED_SETTINGS = {
+    "LLM_MODEL": "LLM_CHAIN",
+    "LLM_FALLBACK_MODEL": "LLM_CHAIN",
+    "LLM_THINKING_LEVEL": "LLM_CHAIN",
+    "LLM_TIMEOUT_S": "LLM_CHAIN",
+    "LLM_FALLBACK_THINKING_LEVEL": "LLM_CHAIN",
+    "LLM_FALLBACK_TIMEOUT_S": "LLM_CHAIN",
+    "LLM_FALLBACK_FROM_ATTEMPT": "LLM_STEP_DOWN_FROM_ATTEMPT",
+}
 
 
 class Settings(BaseSettings):
@@ -37,25 +81,25 @@ class Settings(BaseSettings):
     # LLM
     llm_provider: LlmProvider = "gemini"
     llm_api_key: SecretStr | None = None
-    llm_model: str = "gemini-3.8-flash"
-    llm_fallback_model: str = "gemini-3.5-flash-lite"
-    # Earlier attempts wait out a busy primary model (5xx/timeout) through the delay queues;
-    # from this attempt on, an overloaded primary hands over to LLM_FALLBACK_MODEL (D31).
-    llm_fallback_from_attempt: int = Field(default=3, ge=1)
+    # Ordered models, "model:thinking:timeout_s" comma-separated (D36). Each call goes to the
+    # first model no worker has benched; see ARCHITECTURE §8.2 for the measurements behind it.
+    # Timeouts are also sent as X-Server-Timeout, so Google itself gives up at that point.
+    llm_chain: Annotated[tuple[LlmModelSpec, ...], NoDecode] = DEFAULT_LLM_CHAIN
+    # Earlier attempts wait out one 5xx/timeout through the delay queues (the model may recover);
+    # from this attempt on, any 5xx/timeout steps down to the next model at once (D31, D36).
+    llm_step_down_from_attempt: int = Field(default=3, ge=1)
+    # A model that fails this many times with 5xx/timeout within LLM_STRIKE_WINDOW_S (any job,
+    # any worker) is benched for LLM_MODEL_COOLDOWN_S: every worker skips it meanwhile.
+    llm_model_strikes: int = Field(default=2, ge=1)
+    llm_strike_window_s: float = Field(default=600, gt=0)
+    llm_model_cooldown_s: float = Field(default=600, gt=0)
+    # A model whose daily quota is spent is benched until midnight here (Gemini resets RPD at
+    # midnight Pacific). Looked up when the worker starts.
+    llm_quota_reset_tz: str = "America/Los_Angeles"
     ollama_url: str = "http://ollama:11434"
     ollama_model: str = "qwen3:8b"
     llm_chunk_chars: int | None = Field(default=None, gt=0)
     llm_max_repairs: int = Field(default=1, ge=0)
-    llm_thinking_level: ThinkingLevel = "low"
-    # Seen 2026-11-07: gemini-3.8-flash took ~94 s per call (even for a one-word answer) under
-    # high demand; a slow success must not be cut off and retried. The SDK also sends this as
-    # X-Server-Timeout, so Google itself gives up at this point (a 504 after exactly 240 s).
-    llm_timeout_s: float = Field(default=240, gt=0)
-    # The fallback model gets its own settings (CP7c): gemini-3.5-flash-lite wrote better notes
-    # at "medium" than at "low" in the same ~11-14 s (18-min lecture, 36 images), and a call
-    # that answers in ~14 s should not hold a worker for 240 s when it hangs.
-    llm_fallback_thinking_level: ThinkingLevel = "medium"
-    llm_fallback_timeout_s: float = Field(default=90, gt=0)
 
     # Rate limits — keep below the real provider limits
     llm_rpm: float = Field(default=4, gt=0)
@@ -160,6 +204,33 @@ class Settings(BaseSettings):
     def _check_delays(cls, value: list[int]) -> list[int]:
         if not value or any(delay <= 0 for delay in value):
             raise ValueError("RETRY_DELAYS needs at least one positive number of seconds")
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_replaced_settings(cls, data: Any) -> Any:
+        given = {str(key).upper() for key in data} if isinstance(data, dict) else set()
+        given |= {key.upper() for key, value in os.environ.items() if value}
+        if stale := sorted(given & REPLACED_SETTINGS.keys()):
+            replacements = ", ".join(f"{old} -> {REPLACED_SETTINGS[old]}" for old in stale)
+            raise ValueError(f"settings replaced in D36, remove them from .env: {replacements}")
+        return data
+
+    @field_validator("llm_chain", mode="before")
+    @classmethod
+    def _parse_chain(cls, value: object) -> object:
+        if isinstance(value, str):
+            return tuple(LlmModelSpec.parse(entry) for entry in _split_csv(value))
+        return value
+
+    @field_validator("llm_chain")
+    @classmethod
+    def _check_chain(cls, value: tuple[LlmModelSpec, ...]) -> tuple[LlmModelSpec, ...]:
+        models = [spec.model for spec in value]
+        if not models:
+            raise ValueError("LLM_CHAIN needs at least one model:thinking:timeout_s")
+        if len(set(models)) != len(models):
+            raise ValueError(f"LLM_CHAIN lists a model twice: {models}")
         return value
 
     @field_validator("transcript_langs", mode="before")

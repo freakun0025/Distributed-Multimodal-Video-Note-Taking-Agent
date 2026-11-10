@@ -16,7 +16,7 @@ from common.config import Settings
 from common.errors import ErrorCode, ExternalApi, PermanentError, RetryableError
 from common.models import ErrorInfo, StageMessage
 from common.state import JobStatus, Stage
-from tests.unit.fakes import FakeLimiter
+from tests.unit.fakes import FakeLimiter, MemoryModelHealth
 from worker.context import JobRecord, StageContext, StageFn, StageOutcome
 from worker.runtime import Runtime
 
@@ -177,6 +177,7 @@ async def _handle(
         dict.fromkeys(Stage, stage_fn),
         FakeLimiter(),
         worker="worker-a",
+        model_health=MemoryModelHealth(),
     )
     raw = body if body is not None else (message or _message()).to_body()
     await runtime.handle(FakeIncoming(events, raw, headers))
@@ -213,6 +214,7 @@ async def test_stages_get_the_workers_shared_limiter(tmp_path: Path) -> None:
         {Stage.TRANSCRIBE: stage},
         limiter,
         worker="w",
+        model_health=MemoryModelHealth(),
     )
     await runtime.handle(FakeIncoming(events, _message().to_body()))
     assert limiter.calls == [(ExternalApi.YOUTUBE, 1)]
@@ -237,7 +239,15 @@ async def test_message_for_a_missing_job_is_acked_and_dropped(tmp_path: Path) ->
     events: list[Event] = []
     store = FakeStore(events, None)
     settings = Settings(_env_file=None, data_dir=tmp_path)  # type: ignore[call-arg]
-    runtime = Runtime(store, FakePublisher(events), settings, {}, FakeLimiter(), worker="w")
+    runtime = Runtime(
+        store,
+        FakePublisher(events),
+        settings,
+        {},
+        FakeLimiter(),
+        worker="w",
+        model_health=MemoryModelHealth(),
+    )
     await runtime.handle(FakeIncoming(events, _message().to_body()))
     assert events == [("ack",)]
 

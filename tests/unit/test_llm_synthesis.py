@@ -140,6 +140,26 @@ def test_the_prompt_asks_for_revision_depth_with_a_short_recap() -> None:
     assert request.schema["properties"]["sections"]["minItems"] == 6
 
 
+def test_the_prompt_fits_any_subject_and_asks_for_specifics_only_where_present() -> None:
+    meta = VideoMeta(video_id="v", title="The Congress of Vienna", duration_sec=600)
+    chunk = Chunk(index=0, start_sec=0, end_sec=600, lines=("[0:00] hi",), starts=(0.0,))
+    system = synthesis_request(
+        meta, chunk, 1, language="English", min_frames=3, max_frames=8
+    ).system
+    always, _, when_present = system.partition("Whenever the part contains them")
+    for core in ("key concept", "argument, explanation or mechanism", "trade-offs", "takeaways"):
+        assert core in always
+    for specific in ("formulas", "actual numbers", "code", "dates", "order of events"):
+        assert specific in when_present
+    assert "never make one up" in when_present
+    assert "lecture or tutorial" in system
+    assert "history, the humanities" in system
+    assert "Leave out sponsor messages, channel promotion" in system  # a Patreon bullet, CP7c
+    # A history lecture got correct but unsaid dates (490 BC, 1066, 1492...) from the model.
+    assert "Never add one from your own knowledge, even a correct and well-known one" in system
+    assert "exam-revision" not in system  # not only for exam subjects
+
+
 def test_the_request_states_language_frame_budget_and_time_window() -> None:
     meta = VideoMeta(video_id="v", title="Distributed Systems 6", duration_sec=1200)
     chunk = Chunk(index=1, start_sec=590, end_sec=1200, lines=("[9:50] so the leader",))
@@ -201,6 +221,7 @@ def test_candidate_frames_sit_in_the_transcript_at_their_time() -> None:
     assert "at least one for every section" in request.system
     assert "empty, greyed out or still being built" in request.system
     assert "never what is said around it" in request.system
+    assert "a frame of only the speaker" in request.system  # last resort, like a title card
 
 
 def test_without_candidates_the_prompt_is_text_only() -> None:

@@ -4,14 +4,18 @@ generateContent (stateless, typed config) rather than the newer Interactions API
 conversations server-side by default (D30). The SDK's own retries are switched off: retries go
 through our delay queues, and every attempt takes a limiter token first (invariant 6).
 
-Fallback model, for the rest of the job: when the primary's daily quota is spent, or - only
-once `fallback_on_overload` is set (later attempts, D31) - when it is overloaded (5xx/timeout).
+Model chain (D36): each call goes to the first model of LLM_CHAIN that no worker has benched,
+with that model's thinking level and timeout. It steps down to the next model, for the rest of
+this attempt, when the model's daily quota is spent, when a 5xx/timeout benches it (repeated
+failures, counted across workers), or on any 5xx/timeout once `step_down_on_overload` is set
+(later attempts, D31). A single early 5xx/timeout instead retries the same model through the
+delay queues, so one blip does not cost the stronger model.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,7 +23,7 @@ import httpx
 from google import genai
 from google.genai import errors, types
 
-from common.config import ImageResolution, ThinkingLevel
+from common.config import ImageResolution, LlmModelSpec
 from common.errors import (
     ErrorCode,
     ExternalApi,
@@ -32,6 +36,7 @@ from common.errors import (
 from common.limiter import Limiter
 from common.logging import get_logger
 from worker.llm.base import LlmRequest, PromptImage
+from worker.llm.health import ModelHealth
 
 API = ExternalApi.LLM
 # Google's "high demand" 503s, other 5xx and hung calls: another model may still answer.
@@ -48,15 +53,17 @@ class _Tuning:
     timeout_ms: int
 
     @classmethod
-    def of(cls, level: ThinkingLevel, timeout_s: float) -> _Tuning:
+    def of(cls, spec: LlmModelSpec) -> _Tuning:
         return cls(
-            thinking=types.ThinkingConfig(thinking_level=types.ThinkingLevel(level.upper())),
-            timeout_ms=round(timeout_s * 1000),
+            thinking=types.ThinkingConfig(
+                thinking_level=types.ThinkingLevel(spec.thinking.upper())
+            ),
+            timeout_ms=round(spec.timeout_s * 1000),
         )
 
 
 class _ModelFailedError(Exception):
-    """One model's attempt failed; `error` is what the stage sees if no fallback applies."""
+    """One model's attempt failed; `error` is what the stage sees if no step-down applies."""
 
     def __init__(self, error: VnaError, *, daily_quota: bool) -> None:
         super().__init__(str(error))
@@ -70,82 +77,106 @@ class GeminiProvider:
         limiter: Limiter,
         *,
         api_key: str,
-        model: str,
-        fallback_model: str | None,
-        thinking_level: ThinkingLevel,
-        timeout_s: float,
-        fallback_thinking_level: ThinkingLevel | None = None,
-        fallback_timeout_s: float | None = None,
+        chain: Sequence[LlmModelSpec],
+        health: ModelHealth,
         image_resolution: ImageResolution = "medium",
-        fallback_on_overload: bool = False,
+        step_down_on_overload: bool = False,
         base_url: str | None = None,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
+        if not chain:
+            raise ValueError("the model chain is empty")
         self._limiter = limiter
-        self._model = model
-        self._fallback_model = fallback_model
-        self._fallback_on_overload = fallback_on_overload
-        self._on_fallback = False  # once switched, the rest of this job uses the fallback
+        self._chain = tuple(chain)
+        self._health = health
+        self._step_down_on_overload = step_down_on_overload
+        self._current = 0  # index into the chain; only moves down, for the rest of this attempt
+        self._answered_by: str | None = None
         self._image_resolution = types.PartMediaResolution(
             level=types.PartMediaResolutionLevel(f"MEDIA_RESOLUTION_{image_resolution.upper()}")
         )
         # Per model: thinking level and timeout (the SDK sends the timeout as X-Server-Timeout).
-        self._tuning = {
-            False: _Tuning.of(thinking_level, timeout_s),
-            True: _Tuning.of(
-                fallback_thinking_level or thinking_level, fallback_timeout_s or timeout_s
-            ),
-        }
+        self._tuning = {spec.model: _Tuning.of(spec) for spec in self._chain}
         self._client = genai.Client(
             api_key=api_key,
             http_options=types.HttpOptions(
                 base_url=base_url,
-                timeout=round(timeout_s * 1000),  # milliseconds; overridden per call
+                # milliseconds; every call overrides it with its model's own timeout
+                timeout=max(tuning.timeout_ms for tuning in self._tuning.values()),
                 retry_options=types.HttpRetryOptions(attempts=1),
                 httpx_async_client=http_client,
             ),
         )
 
     @property
-    def model(self) -> str:
-        return self._fallback_model if self._on_fallback and self._fallback_model else self._model
+    def chain(self) -> tuple[LlmModelSpec, ...]:
+        return self._chain
 
     @property
-    def fallback_on_overload(self) -> bool:
-        return self._fallback_on_overload
+    def step_down_on_overload(self) -> bool:
+        return self._step_down_on_overload
+
+    @property
+    def answered_by(self) -> str | None:
+        """The model that gave the last answer (logged with the synthesis)."""
+        return self._answered_by
 
     async def generate_json(self, request: LlmRequest) -> str:
-        try:
-            return await self._generate(self.model, request)
-        except _ModelFailedError as failed:
-            reason = self._fallback_reason(failed)
-            if reason is None:
-                raise failed.error from failed.__cause__
-            log.warning(
-                "llm_fallback",
-                reason=reason,
-                model=self._model,
-                fallback=self._fallback_model,
-                code=failed.error.code,
-            )
-        self._on_fallback = True
-        try:
-            return await self._generate(self.model, request)
-        except _ModelFailedError as failed_again:
-            raise failed_again.error from failed_again.__cause__
+        remaining = self._chain[self._current :]
+        benched = await self._health.benched([spec.model for spec in remaining])
+        failed: _ModelFailedError | None = None
+        for index, spec in enumerate(remaining, start=self._current):
+            if spec.model in benched:
+                continue
+            self._current = index
+            try:
+                text = await self._generate(spec, request)
+            except _ModelFailedError as error:
+                reason = await self._step_down_reason(spec, error)
+                if reason is None:
+                    raise error.error from error.__cause__
+                failed = error
+                log.warning(
+                    "llm_step_down",
+                    model=spec.model,
+                    reason=reason,
+                    code=error.error.code,
+                    next=self._next_model(index, benched),
+                )
+                continue
+            await self._health.answered(spec.model)
+            self._answered_by = spec.model
+            return text
+        if failed is not None:  # the last model tried failed too: the delay queue retries
+            raise failed.error from failed.__cause__
+        back_in = min(benched.values())
+        raise RetryableError(
+            ErrorCode.RATE_LIMITED,
+            f"every model in LLM_CHAIN is benched; the first is back in {back_in:.0f} s",
+            api=API,
+            retry_after_s=back_in,
+        )
 
-    def _fallback_reason(self, failed: _ModelFailedError) -> str | None:
-        if self._on_fallback or not self._fallback_model:
-            return None
+    async def _step_down_reason(self, spec: LlmModelSpec, failed: _ModelFailedError) -> str | None:
+        """Why to try the next model now, or None to give the error to the delay queues."""
         if failed.daily_quota:
+            back_in = await self._health.quota_spent(spec.model)
+            log.warning("llm_model_benched", model=spec.model, reason="daily_quota", for_s=back_in)
             return "daily_quota"
-        if self._fallback_on_overload and failed.error.code in OVERLOAD_CODES:
-            return "overloaded"
-        return None
+        if failed.error.code not in OVERLOAD_CODES:
+            return None  # rejected request, per-minute rate: another model would not help
+        if await self._health.overloaded(spec.model):
+            log.warning("llm_model_benched", model=spec.model, reason="overloaded")
+            return "overloaded_repeatedly"
+        return "overloaded" if self._step_down_on_overload else None
 
-    async def _generate(self, model: str, request: LlmRequest) -> str:
+    def _next_model(self, index: int, benched: dict[str, float]) -> str | None:
+        later = (spec.model for spec in self._chain[index + 1 :] if spec.model not in benched)
+        return next(later, None)
+
+    async def _generate(self, spec: LlmModelSpec, request: LlmRequest) -> str:
         await self._limiter.acquire(API)
-        tuning = self._tuning[self._on_fallback]
+        tuning = self._tuning[spec.model]
         config = types.GenerateContentConfig(
             system_instruction=request.system,
             response_mime_type="application/json",
@@ -155,6 +186,7 @@ class GeminiProvider:
             # No tools, and no SDK-driven follow-up calls that would bypass the limiter.
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
+        model = spec.model
         try:
             response = await self._client.aio.models.generate_content(
                 model=model,

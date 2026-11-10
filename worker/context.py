@@ -15,6 +15,7 @@ from common.config import Settings
 from common.limiter import Limiter
 from common.models import JobWarning, StageMessage
 from common.state import JobStatus
+from worker.llm.health import ModelHealth
 
 # Job columns a stage may set through StageOutcome.job_updates. Never `status`: only
 # common.state.transition() writes it (invariant 5).
@@ -91,6 +92,7 @@ class StageContext:
     log: FilteringBoundLogger
     report_progress: ProgressReporter  # fraction 0..1 of the stage's progress range
     limiter: Limiter  # acquire before every YouTube / LLM / Notion call (invariant 6)
+    model_health: ModelHealth  # LLM models benched by any worker (D36)
 
 
 StageFn = Callable[[StageContext], Awaitable[StageOutcome]]

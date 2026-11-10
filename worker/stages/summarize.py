@@ -45,7 +45,7 @@ CANDIDATES_SHARE = 0.3  # of this stage's progress bar, when candidates are bein
 async def run(ctx: StageContext) -> StageOutcome:
     return await summarize(
         ctx,
-        make_provider(ctx.settings, ctx.limiter, ctx.message.attempt),
+        make_provider(ctx.settings, ctx.limiter, ctx.model_health, ctx.message.attempt),
         video_source(ctx.settings, ctx.limiter),
     )
 
@@ -113,6 +113,7 @@ async def summarize(
         words=_words(synthesis),
         frames=len(synthesis.frames),
         largest_gap_s=largest_gap([f.t_sec for f in synthesis.frames], meta.duration_sec),
+        model=llm.answered_by,
     )
     return StageOutcome(
         summary={

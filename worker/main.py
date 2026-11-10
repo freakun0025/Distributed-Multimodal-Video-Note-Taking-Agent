@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import signal
 import socket
+from zoneinfo import ZoneInfo
 
 import aio_pika
 from aio_pika.abc import AbstractIncomingMessage
@@ -20,6 +21,7 @@ from common.config import get_settings
 from common.db import create_engine
 from common.limiter import RateLimiter, buckets_from_settings
 from common.logging import configure_logging, get_logger
+from worker.llm.health import RedisModelHealth
 from worker.runtime import Runtime
 from worker.stages import STAGES
 from worker.store import PostgresJobStore
@@ -56,6 +58,9 @@ async def run() -> None:
             STAGES,
             RateLimiter(redis, buckets_from_settings(settings), settings.limiter_max_wait_s),
             worker=socket.gethostname(),
+            model_health=RedisModelHealth.from_settings(
+                redis, settings, ZoneInfo(settings.llm_quota_reset_tz)
+            ),
         )
 
         idle = asyncio.Event()

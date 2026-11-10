@@ -12,27 +12,45 @@ from worker.llm.base import LlmRequest, PromptImage, PromptPart
 from worker.llm.budget import NO_FLOOR, FrameSlot, NotesFloor
 from worker.llm.chunking import Chunk, clock
 
-# Revision depth (CP7c, D35): a student revises from these notes instead of re-watching.
+# Revision depth (CP7c, D35) for any subject: a student revises from these notes instead of
+# re-watching. What every video has is always asked for; subject-specific detail (formulas,
+# numbers, code, dates) only where the part contains it. The concrete patterns stay: without
+# one, Flash-Lite left out the compared values (CP7c benchmark).
 SYSTEM = """\
-You turn one part of a lecture into exam-revision notes. A student must be able to revise this \
-material from your notes alone, without watching the video again.
+You turn one part of a video lecture or tutorial into revision notes. A student must be able to \
+revise this material from your notes alone, without watching the video again. The subject can \
+be anything: science, mathematics, programming, engineering, history, the humanities, business \
+or something else.
 
 Rules:
 - Write every heading, bullet, caption and reason in {language}.
 - summary: 2-4 sentences, a quick recap of what this part teaches and concludes.
-- sections: in the lecture's order, one per topic; at least {min_sections}, more if the part \
+- sections: in the video's order, one per topic; at least {min_sections}, more if the part \
 covers more topics. Each has a short heading and at least {min_bullets} bullets, more where the \
-material is dense. Cover:
-  - every new term, with its definition;
-  - every formula, written out in full in plain text (for example "F = m * a, where F is the \
-force, m the mass and a the acceleration");
-  - every procedure or method, as ordered steps ("Step 1: ...", "Step 2: ...");
-  - worked examples with their actual numbers: every value the lecture calculates or compares \
-(results, scores, thresholds, totals), which option wins and why (for example "Option A scores \
-0.40 and option B 0.21, so B is chosen because the lower score is better");
-  - comparisons, rules of thumb, pitfalls and caveats the speaker gives.
+material is dense.
+- Always cover:
+  - every key concept and new term, with its definition or meaning;
+  - every argument, explanation or mechanism: what happens, how and why (causes and effects, \
+the evidence given);
+  - comparisons, trade-offs, rules of thumb, pitfalls and caveats the speaker gives;
+  - the takeaways: conclusions, results and recommendations.
+- Whenever the part contains them, said aloud or shown on screen, also cover them exactly:
+  - formulas and equations, written out in plain text with what each symbol means (for example \
+"F = m * a, where F is the force, m the mass and a the acceleration");
+  - worked examples with their actual numbers: the values calculated or compared, which option \
+wins and why (for example "Option A scores 0.40 and option B 0.21, so B is chosen because the \
+lower score is better");
+  - procedures, algorithms, commands and code, as ordered steps ("Step 1: ...", "Step 2: ...") \
+with names, commands and code written exactly as given;
+  - names, dates, places and figures, and the order of events (for example "In 1869 the Suez \
+Canal opened, so ships from Europe could reach India without sailing around Africa").
+  Leave out a kind of detail the part does not have; never make one up.
+- Every name, date, number and formula in the notes must be said in the transcript or visible \
+in a candidate frame. Never add one from your own knowledge, even a correct and well-known one: \
+if the speaker gives no date for an event, write the event without a date.
 - Each bullet is one self-contained fact, step or result, in a full sentence. State the content \
 itself; no filler such as "the video explains" or "the speaker discusses".
+- Leave out sponsor messages, channel promotion and requests to like, subscribe, buy or donate.
 - Use only what is said in the transcript or shown on screen; add no outside facts.
 {frames_rule}
 - For each frame: t_sec is whole seconds from the start of the video and must lie between \
@@ -59,19 +77,22 @@ from start to end; in each stretch pick its best moment."""
 # Frame-aware (D34): real frames sit inside the transcript at their time.
 CANDIDATE_FRAMES_RULE = """\
 - Frames from the video appear inside the transcript at their time, each labelled "Candidate \
-frame t_sec=N". Read them, and put their slide text, numbers, labels, equations and diagrams \
-into the notes, including what is shown but never said aloud.
+frame t_sec=N". Read them, and put what they show into the notes (slide text, labels, \
+numbers, equations, code, diagrams, charts, maps, timelines), including what is shown but never \
+said aloud.
 - Pick between {min_frames} and {max_frames} of these candidates as the pictures for the notes, \
 by their exact t_sec:
   - spread them over the whole part, from its first minutes to its last: at least one for every \
 section that has a candidate inside it;
-  - choose frames where a diagram, table or worked example is complete, with its labels and \
-numbers filled in, over frames where most of it is empty, greyed out or still being built;
-  - prefer frames that show a definition, formula, worked example, comparison or final result; \
-a title, intro or end card only when nothing else is left.
+  - choose frames where a slide, diagram, table, code listing or worked example is complete, \
+with its text and labels filled in, over frames where most of it is empty, greyed out or still \
+being built;
+  - prefer frames that show what a note explains (a definition, diagram, formula, code, chart, \
+map, timeline, comparison or result); a frame of only the speaker, or a title, intro or end \
+card, only when nothing else is left.
 {order_rule}
-- caption: at most two sentences on what is visible in that frame (its text, labels, numbers or \
-diagram). Describe only what is on screen in that frame, never what is said around it."""
+- caption: at most two sentences on what is visible in that frame (its text, labels, numbers, \
+code or picture). Describe only what is on screen in that frame, never what is said around it."""
 
 HEADER = """\
 Video: {title} ({duration})

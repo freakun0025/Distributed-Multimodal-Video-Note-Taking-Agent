@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from common.config import Settings
 from common.errors import ErrorCode, ExternalApi, PermanentError
 from common.limiter import Limiter
+
+if TYPE_CHECKING:
+    from worker.llm.health import ModelHealth
 
 
 @dataclass(frozen=True)
@@ -43,12 +46,20 @@ class LlmProvider(Protocol):
         """The model's answer as JSON text; acquires the `llm` limiter token itself."""
         ...
 
+    @property
+    def answered_by(self) -> str | None:
+        """The model that gave the last answer, if the provider knows (logs only)."""
+        ...
 
-def make_provider(settings: Settings, limiter: Limiter, attempt: int = 1) -> LlmProvider:
+
+def make_provider(
+    settings: Settings, limiter: Limiter, health: ModelHealth, attempt: int = 1
+) -> LlmProvider:
     """The configured provider; with FAKE_APIS=true, Gemini's client talks to the fakes service.
 
-    From attempt LLM_FALLBACK_FROM_ATTEMPT on, an overloaded primary model hands over to the
-    fallback model, so a long provider outage still ends in notes rather than the DLQ (D31).
+    The models of LLM_CHAIN in order, skipping those `health` says any worker has benched. From
+    attempt LLM_STEP_DOWN_FROM_ATTEMPT on, any 5xx/timeout steps down to the next model at
+    once, so a long provider outage still ends in notes rather than the DLQ (D31, D36).
     """
     if settings.llm_provider != "gemini":
         # Ollama arrives in M4 (O-6); FAKE_APIS=true already replaces "fake" (ARCHITECTURE §14).
@@ -66,13 +77,9 @@ def make_provider(settings: Settings, limiter: Limiter, attempt: int = 1) -> Llm
     return GeminiProvider(
         limiter,
         api_key=api_key,
-        model=settings.llm_model,
-        fallback_model=settings.llm_fallback_model,
-        thinking_level=settings.llm_thinking_level,
-        timeout_s=settings.llm_timeout_s,
-        fallback_thinking_level=settings.llm_fallback_thinking_level,
-        fallback_timeout_s=settings.llm_fallback_timeout_s,
+        chain=settings.llm_chain,
+        health=health,
         image_resolution=settings.llm_image_resolution,
-        fallback_on_overload=attempt >= settings.llm_fallback_from_attempt,
+        step_down_on_overload=attempt >= settings.llm_step_down_from_attempt,
         base_url=base_url,
     )
