@@ -101,8 +101,20 @@ async def generate_content(api_version: str, model_action: str, request: Request
         for part in content.get("parts", [])
     )
     schema = body.get("generationConfig", {}).get("responseJsonSchema", {})
-    max_frames = schema.get("properties", {}).get("frames", {}).get("maxItems", _DEFAULT_MAX_FRAMES)
-    notes = notes_from_transcript(prompt, max_frames)
+    properties = schema.get("properties", {})
+    sections = properties.get("sections", {})
+    frames = properties.get("frames", {})
+    # Like Gemini, honour the schema: frame budget, notes floor, one frame per slot.
+    notes = notes_from_transcript(
+        prompt,
+        frames.get("maxItems", _DEFAULT_MAX_FRAMES),
+        min_sections=sections.get("minItems", 1),
+        min_bullets=sections.get("items", {})
+        .get("properties", {})
+        .get("bullets", {})
+        .get("minItems", 1),
+        slot_times=[_slot_time(item) for item in frames.get("prefixItems", [])],
+    )
     return {
         "candidates": [
             {
@@ -119,24 +131,49 @@ async def generate_content(api_version: str, model_action: str, request: Request
     }
 
 
-def notes_from_transcript(prompt: str, max_frames: int) -> dict[str, Any]:
-    """Deterministic notes: two sections from the transcript lines, evenly spaced frames."""
+def _slot_time(item: dict[str, Any]) -> int:
+    """A frame slot's middle allowed time: its candidate list, or its range of seconds."""
+    t_sec = item.get("properties", {}).get("t_sec", {})
+    if choices := t_sec.get("enum"):
+        return int(choices[len(choices) // 2])
+    return (int(t_sec.get("minimum", 0)) + int(t_sec.get("maximum", 0))) // 2
+
+
+def notes_from_transcript(
+    prompt: str,
+    max_frames: int,
+    *,
+    min_sections: int = 1,
+    min_bullets: int = 1,
+    slot_times: list[int] | None = None,
+) -> dict[str, Any]:
+    """Deterministic notes: the transcript lines split into at least two sections (or
+    `min_sections`), each with at least `min_bullets` bullets; one frame per slot when the
+    schema has slots, else evenly spaced frames."""
     lines = [
         (int(h or 0) * 3600 + int(m) * 60 + int(s), text.strip())
         for h, m, s, text in _LINE.findall(prompt)
         if not text.startswith("Candidate frame")  # labels, not spoken lines
     ]
-    half = max(1, len(lines) // 2)
+    count = max(2, min_sections)
+    groups = [
+        lines[(i * len(lines)) // count : ((i + 1) * len(lines)) // count] for i in range(count)
+    ]
     sections = [
-        {"heading": f"Part {i + 1}", "bullets": [text for _, text in group[:3]]}
-        for i, group in enumerate((lines[:half], lines[half:]))
-        if group
+        {
+            "heading": f"Part {i + 1}",
+            "bullets": [text for _, text in group[: max(3, min_bullets)]]
+            + [f"Fake point {n + 1}." for n in range(len(group), min_bullets)],
+        }
+        for i, group in enumerate(groups)
     ]
     # Frame-aware prompts (D34) label real frames: pick among those; else among the lines.
     candidates = [int(t) for t in _CANDIDATE.findall(prompt)]
     pool = [(t, "") for t in candidates] or lines
     count = min(max_frames, len(pool))
     picks = [pool[(i * len(pool)) // count] for i in range(count)] if count else []
+    if slot_times:
+        picks = [(t, "") for t in slot_times]
     return {
         "title": "Fake lecture notes",
         "summary": f"Fake summary of {len(lines)} transcript lines.",

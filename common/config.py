@@ -48,8 +48,14 @@ class Settings(BaseSettings):
     llm_max_repairs: int = Field(default=1, ge=0)
     llm_thinking_level: ThinkingLevel = "low"
     # Seen 2026-11-07: gemini-3.8-flash took ~94 s per call (even for a one-word answer) under
-    # high demand; a slow success must not be cut off and retried.
+    # high demand; a slow success must not be cut off and retried. The SDK also sends this as
+    # X-Server-Timeout, so Google itself gives up at this point (a 504 after exactly 240 s).
     llm_timeout_s: float = Field(default=240, gt=0)
+    # The fallback model gets its own settings (CP7c): gemini-3.5-flash-lite wrote better notes
+    # at "medium" than at "low" in the same ~11-14 s (18-min lecture, 36 images), and a call
+    # that answers in ~14 s should not hold a worker for 240 s when it hangs.
+    llm_fallback_thinking_level: ThinkingLevel = "medium"
+    llm_fallback_timeout_s: float = Field(default=90, gt=0)
 
     # Rate limits — keep below the real provider limits
     llm_rpm: float = Field(default=4, gt=0)
@@ -85,9 +91,19 @@ class Settings(BaseSettings):
 
     # Pipeline
     max_video_seconds: int = Field(default=1200, gt=0)
-    # Frames per job (ARCHITECTURE §8.2: 3-8); the LLM is asked for at least MIN_FRAMES.
+    # Frames per job (ARCHITECTURE §8.2: 3-8). The LLM must pick at least one frame per
+    # MIN_FRAME_EVERY_S of video, never fewer than MIN_FRAMES nor more than MAX_FRAMES (CP7c).
     min_frames: int = Field(default=3, ge=0)
     max_frames: int = Field(default=8, ge=0)
+    min_frame_every_s: int = Field(default=180, gt=0)
+    # Revision-depth notes (CP7c, D35): each part must have at least one section per
+    # NOTES_SECTION_EVERY_S and NOTES_BULLETS_PER_MINUTE bullets per minute, spread over its
+    # sections. Gemini enforces these as minItems; each counted item enlarges the schema it
+    # compiles, so the floors are capped (the prompt asks for more where the lecture has more).
+    notes_section_every_s: int = Field(default=180, gt=0)
+    notes_bullets_per_minute: float = Field(default=1.5, ge=0)
+    notes_floor_max_sections: int = Field(default=8, ge=1)
+    notes_floor_max_bullets: int = Field(default=6, ge=1)
     # Frames closer together than this show the same slide; the later one is dropped.
     frame_min_gap_s: int = Field(default=10, ge=0)
     # EXTRACT_FRAMES (ARCHITECTURE §8.3, D33): one download at this height, then per pick

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -41,6 +42,19 @@ _DURATION = re.compile(r"^(\d+(?:\.\d+)?)s$")
 log = get_logger()
 
 
+@dataclass(frozen=True)
+class _Tuning:
+    thinking: types.ThinkingConfig
+    timeout_ms: int
+
+    @classmethod
+    def of(cls, level: ThinkingLevel, timeout_s: float) -> _Tuning:
+        return cls(
+            thinking=types.ThinkingConfig(thinking_level=types.ThinkingLevel(level.upper())),
+            timeout_ms=round(timeout_s * 1000),
+        )
+
+
 class _ModelFailedError(Exception):
     """One model's attempt failed; `error` is what the stage sees if no fallback applies."""
 
@@ -60,6 +74,8 @@ class GeminiProvider:
         fallback_model: str | None,
         thinking_level: ThinkingLevel,
         timeout_s: float,
+        fallback_thinking_level: ThinkingLevel | None = None,
+        fallback_timeout_s: float | None = None,
         image_resolution: ImageResolution = "medium",
         fallback_on_overload: bool = False,
         base_url: str | None = None,
@@ -73,14 +89,18 @@ class GeminiProvider:
         self._image_resolution = types.PartMediaResolution(
             level=types.PartMediaResolutionLevel(f"MEDIA_RESOLUTION_{image_resolution.upper()}")
         )
-        self._thinking = types.ThinkingConfig(
-            thinking_level=types.ThinkingLevel(thinking_level.upper())
-        )
+        # Per model: thinking level and timeout (the SDK sends the timeout as X-Server-Timeout).
+        self._tuning = {
+            False: _Tuning.of(thinking_level, timeout_s),
+            True: _Tuning.of(
+                fallback_thinking_level or thinking_level, fallback_timeout_s or timeout_s
+            ),
+        }
         self._client = genai.Client(
             api_key=api_key,
             http_options=types.HttpOptions(
                 base_url=base_url,
-                timeout=round(timeout_s * 1000),  # milliseconds
+                timeout=round(timeout_s * 1000),  # milliseconds; overridden per call
                 retry_options=types.HttpRetryOptions(attempts=1),
                 httpx_async_client=http_client,
             ),
@@ -125,11 +145,13 @@ class GeminiProvider:
 
     async def _generate(self, model: str, request: LlmRequest) -> str:
         await self._limiter.acquire(API)
+        tuning = self._tuning[self._on_fallback]
         config = types.GenerateContentConfig(
             system_instruction=request.system,
             response_mime_type="application/json",
             response_json_schema=dict(request.schema),
-            thinking_config=self._thinking,
+            thinking_config=tuning.thinking,
+            http_options=types.HttpOptions(timeout=tuning.timeout_ms),
             # No tools, and no SDK-driven follow-up calls that would bypass the limiter.
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )

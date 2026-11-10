@@ -12,6 +12,7 @@ from common.errors import ErrorCode, ExternalApi, PermanentError, RetryableError
 from common.models import Synthesis, Transcript, TranscriptSegment, VideoMeta
 from common.state import Stage
 from fakes.app import app as fakes_app
+from fakes.app import notes_from_transcript
 from tests.unit.fakes import VIDEO_ID, FakeLimiter, make_context
 from worker.artifacts import write_json_atomic
 from worker.candidates import Cut
@@ -20,7 +21,7 @@ from worker.context import StageContext
 from worker.llm.base import LlmRequest
 from worker.llm.gemini import GeminiProvider
 from worker.media import Grab
-from worker.stages.summarize import summarize
+from worker.stages.summarize import largest_gap, summarize
 from worker.stages.transcribe import transcribe
 
 VALID = {
@@ -47,10 +48,14 @@ class ScriptedLlm:
 
 
 def _context(
-    tmp_path: Path, segments: int = 6, progress: list[float] | None = None, **settings: Any
+    tmp_path: Path,
+    segments: int = 6,
+    progress: list[float] | None = None,
+    video_seconds: int = 600,
+    **settings: Any,
 ) -> StageContext:
     ctx = make_context(tmp_path, Stage.SUMMARIZE, progress=progress, **settings)
-    meta = VideoMeta(video_id=VIDEO_ID, title="Distributed Systems 6", duration_sec=600)
+    meta = VideoMeta(video_id=VIDEO_ID, title="Distributed Systems 6", duration_sec=video_seconds)
     transcript = Transcript(
         source="captions",
         language="en",
@@ -81,6 +86,47 @@ async def test_notes_are_written_and_frames_requested_recorded(tmp_path: Path) -
     assert "[0:20] line 1 about Raft" in request.prompt
     frames = request.schema["properties"]["frames"]
     assert (frames["minItems"], frames["maxItems"]) == (3, 8)  # MIN_FRAMES, MAX_FRAMES
+
+
+async def test_an_18_minute_lecture_must_get_deep_notes_and_at_least_6_frames(
+    tmp_path: Path,
+) -> None:
+    # 55 lines x 20 s = 0..1100 s: one part, so its floor is 6 sections x 5 bullets (CP7c).
+    ctx = _context(tmp_path, segments=55, video_seconds=1088)
+    llm = ScriptedLlm(json.dumps(VALID))
+    await summarize(ctx, llm)
+
+    (request,) = llm.requests
+    properties = request.schema["properties"]
+    assert (properties["frames"]["minItems"], properties["frames"]["maxItems"]) == (6, 8)
+    assert properties["sections"]["minItems"] == 6
+    assert properties["sections"]["items"]["properties"]["bullets"]["minItems"] == 5
+    assert "at least 6, more if the part covers more topics" in request.system
+    assert "between 6 and 8 moments" in request.system
+    # One required frame per 3-minute stretch, the last ending at the video's last second.
+    stretches = [item["properties"]["t_sec"] for item in properties["frames"]["prefixItems"]]
+    assert [(s["minimum"], s["maximum"]) for s in stretches] == [
+        (0, 180),
+        (181, 361),
+        (362, 543),
+        (544, 724),
+        (725, 905),
+        (906, 1087),
+    ]
+
+
+def test_largest_gap_measures_the_longest_stretch_without_a_frame() -> None:
+    # The CP7b baseline picks: nothing after 12:20 of an 18:08 video.
+    assert largest_gap([45, 166, 438, 589, 740], 1088) == 348
+    assert largest_gap([300, 100], 400) == 200
+    assert largest_gap([], 600) == 600
+
+
+def test_the_fake_llm_honours_the_notes_floor_like_gemini() -> None:
+    prompt = "\n".join(f"[0:{i:02d}] line {i}" for i in range(10))
+    notes = notes_from_transcript(prompt, 4, min_sections=5, min_bullets=4)
+    assert len(notes["sections"]) == 5
+    assert all(len(section["bullets"]) >= 4 for section in notes["sections"])
 
 
 async def test_unusable_output_is_repaired_once_with_the_problem_stated(tmp_path: Path) -> None:
@@ -224,6 +270,9 @@ async def test_notes_see_candidate_frames_and_picks_snap_to_them(tmp_path: Path)
         b"jpeg@105",
     ]
     assert "Candidate frame t_sec=45" in request.prompt
+    # 3 required frames over 0..120 s: one from each stretch's candidates.
+    slots = request.schema["properties"]["frames"]["prefixItems"]
+    assert [s["properties"]["t_sec"]["enum"] for s in slots] == [[15], [45, 75], [105]]
     assert [f.t_sec for f in _synthesis(ctx).frames] == [45]  # 46 snapped to the candidate
     assert outcome.summary["candidates"] == 20  # made for the whole video; 4 shown to this part
     assert progress[0] <= 0.3 < progress[-1] == 1.0

@@ -70,6 +70,8 @@ def make_provider(settings: Settings, limiter: Limiter, attempt: int = 1) -> Llm
         fallback_model=settings.llm_fallback_model,
         thinking_level=settings.llm_thinking_level,
         timeout_s=settings.llm_timeout_s,
+        fallback_thinking_level=settings.llm_fallback_thinking_level,
+        fallback_timeout_s=settings.llm_fallback_timeout_s,
         image_resolution=settings.llm_image_resolution,
         fallback_on_overload=attempt >= settings.llm_fallback_from_attempt,
         base_url=base_url,

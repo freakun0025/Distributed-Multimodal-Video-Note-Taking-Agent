@@ -7,6 +7,7 @@ import pytest
 
 from common.models import FramePick, Section, Synthesis, VideoMeta
 from worker.llm.base import PromptImage
+from worker.llm.budget import FrameSlot, NotesFloor
 from worker.llm.chunking import Chunk
 from worker.llm.prompts import CandidateImage, synthesis_request, synthesis_schema
 from worker.llm.synthesis import (
@@ -108,6 +109,37 @@ def test_schema_is_self_contained_and_bounds_the_frame_count() -> None:
     assert set(frame["required"]) == {"t_sec", "caption", "reason"}
 
 
+def test_schema_enforces_the_notes_floor_on_sections_and_their_bullets() -> None:
+    schema = synthesis_schema(2, 4, NotesFloor(sections=6, bullets=5))
+    sections = schema["properties"]["sections"]
+    assert sections["minItems"] == 6
+    assert sections["items"]["properties"]["bullets"]["minItems"] == 5
+    assert "maxItems" not in sections  # a floor, never a ceiling on depth
+
+
+def test_the_prompt_asks_for_revision_depth_with_a_short_recap() -> None:
+    meta = VideoMeta(video_id="v", title="Trees", duration_sec=1088)
+    chunk = Chunk(index=0, start_sec=0, end_sec=1088, lines=("[0:00] hi",), starts=(0.0,))
+    request = synthesis_request(
+        meta,
+        chunk,
+        1,
+        language="English",
+        min_frames=6,
+        max_frames=8,
+        floor=NotesFloor(sections=6, bullets=5),
+    )
+    system = request.system
+    assert "revise this material from your notes alone" in system
+    assert "summary: 2-4 sentences" in system
+    assert "at least 6, more if the part covers more topics" in system
+    assert "at least 5 bullets" in system
+    for must in ("definition", "formula", "ordered steps", "actual numbers", "pitfalls"):
+        assert must in system
+    assert "concise" not in system  # the CP7b wording that produced 9-bullet notes
+    assert request.schema["properties"]["sections"]["minItems"] == 6
+
+
 def test_the_request_states_language_frame_budget_and_time_window() -> None:
     meta = VideoMeta(video_id="v", title="Distributed Systems 6", duration_sec=1200)
     chunk = Chunk(index=1, start_sec=590, end_sec=1200, lines=("[9:50] so the leader",))
@@ -164,6 +196,11 @@ def test_candidate_frames_sit_in_the_transcript_at_their_time() -> None:
     assert 'labelled "Candidate frame t_sec=N"' in request.system
     assert "between 1 and 2 of these candidates" in request.system
     assert "only have the transcript" not in request.system
+    # CP7c frame rules: whole timeline, complete slides, captions of what is visible only.
+    assert "from its first minutes to its last" in request.system
+    assert "at least one for every section" in request.system
+    assert "empty, greyed out or still being built" in request.system
+    assert "never what is said around it" in request.system
 
 
 def test_without_candidates_the_prompt_is_text_only() -> None:
@@ -172,3 +209,43 @@ def test_without_candidates_the_prompt_is_text_only() -> None:
     request = synthesis_request(meta, chunk, 1, language="English", min_frames=3, max_frames=8)
     assert len(request.parts) == 1 and request.images == ()
     assert "only have the transcript" in request.system
+
+
+def test_slots_make_frame_i_come_from_stretch_i_and_only_from_its_candidates() -> None:
+    slots = [FrameSlot(0, 59, (15, 45)), FrameSlot(60, 119, (105,))]
+    schema = synthesis_schema(3, 4, slots=slots)
+    frames = schema["properties"]["frames"]
+    assert (frames["minItems"], frames["maxItems"]) == (2, 4)  # one per slot
+    allowed = [item["properties"]["t_sec"] for item in frames["prefixItems"]]
+    assert allowed == [{"type": "integer", "enum": [15, 45]}, {"type": "integer", "enum": [105]}]
+    assert frames["items"]["properties"]["t_sec"] == {"type": "integer", "enum": [15, 45, 105]}
+    assert set(frames["prefixItems"][0]["required"]) == {"t_sec", "caption", "reason"}
+
+
+def test_slots_without_candidates_bound_each_frame_to_its_seconds() -> None:
+    schema = synthesis_schema(2, 8, slots=[FrameSlot(0, 299), FrameSlot(300, 599)])
+    frames = schema["properties"]["frames"]
+    assert [item["properties"]["t_sec"] for item in frames["prefixItems"]] == [
+        {"type": "integer", "minimum": 0, "maximum": 299},
+        {"type": "integer", "minimum": 300, "maximum": 599},
+    ]
+    assert frames["items"]["properties"]["t_sec"]["maximum"] == 599
+
+
+def test_the_prompt_explains_the_slots_only_when_there_are_slots() -> None:
+    meta = VideoMeta(video_id="v", title="Trees", duration_sec=600)
+    chunk = Chunk(index=0, start_sec=0, end_sec=600, lines=("[0:00] hi",), starts=(0.0,))
+    with_slots = synthesis_request(
+        meta,
+        chunk,
+        1,
+        language="English",
+        min_frames=3,
+        max_frames=8,
+        slots=[FrameSlot(0, 299), FrameSlot(300, 599)],
+    )
+    assert "Frames 1 to 2 each come from their own stretch" in with_slots.system
+    assert "between 2 and 8 moments" in with_slots.system  # min = number of slots
+    plain = synthesis_request(meta, chunk, 1, language="English", min_frames=3, max_frames=8)
+    assert "own stretch" not in plain.system
+    assert "\n\n-" not in plain.system  # no blank line left where the rule would be

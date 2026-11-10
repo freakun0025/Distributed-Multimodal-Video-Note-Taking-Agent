@@ -12,8 +12,10 @@ costs one more LLM call per chunk; the limiter still applies.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import math
+from dataclasses import dataclass
 from pathlib import Path
 
 from common.errors import ErrorCode, ExternalApi, PermanentError, VnaError
@@ -23,6 +25,7 @@ from worker.candidates import Candidate, CutDetector, Grabber, detect_cuts, prep
 from worker.clients.youtube import VideoDownloader, video_source
 from worker.context import StageContext, StageOutcome
 from worker.llm.base import LlmProvider, make_provider
+from worker.llm.budget import FrameSlot, NotesFloor, frame_slots, min_frames_for, notes_floor
 from worker.llm.chunking import Chunk, chunk_transcript, merge
 from worker.llm.prompts import CandidateImage, synthesis_request
 from worker.llm.synthesis import (
@@ -61,9 +64,11 @@ async def summarize(
     if source is not None:
         await ctx.report_progress(CANDIDATES_SHARE)  # candidates ready; the LLM call is next
     chunks = chunk_transcript(transcript.segments, ctx.settings.effective_llm_chunk_chars)
-    # Spread the MIN_FRAMES..MAX_FRAMES budget over the parts; the merged result is capped again.
+    # Spread the frame budget (at least one per MIN_FRAME_EVERY_S, within MIN_FRAMES..MAX_FRAMES)
+    # over the parts; the merged result is capped again.
+    min_frames = min_frames_for(meta.duration_sec, ctx.settings)
     max_per_chunk = math.ceil(ctx.settings.max_frames / len(chunks))
-    min_per_chunk = min(math.ceil(ctx.settings.min_frames / len(chunks)), max_per_chunk)
+    min_per_chunk = min(math.ceil(min_frames / len(chunks)), max_per_chunk)
     start = CANDIDATES_SHARE if source is not None else 0.0
     dropped = Dropped()
 
@@ -71,11 +76,21 @@ async def summarize(
     for chunk in chunks:
         shown = [c for c in images if chunk.start_sec <= c.t_sec <= chunk.end_sec]
         most = min(max_per_chunk, len(shown)) if shown else max_per_chunk
-        parts.append(
-            await _synthesize(
-                ctx, llm, meta, chunk, len(chunks), (min(min_per_chunk, most), most), shown, dropped
-            )
+        least = min(min_per_chunk, most)
+        budget = _Budget(
+            frames=(least, most),
+            notes=notes_floor(chunk.end_sec - chunk.start_sec, ctx.settings),
+            # One required frame per stretch of the part, so the pictures cover all of it.
+            slots=tuple(
+                frame_slots(
+                    chunk.start_sec,
+                    min(chunk.end_sec, meta.duration_sec - 1),
+                    least,
+                    [c.t_sec for c in shown],
+                )
+            ),
         )
+        parts.append(await _synthesize(ctx, llm, meta, chunk, len(chunks), budget, shown, dropped))
         await ctx.report_progress(start + (1 - start) * len(parts) / len(chunks))
     synthesis = finalize(
         merge(parts),
@@ -89,12 +104,15 @@ async def summarize(
         ctx.log.info(
             "frames_dropped", frames=[{"t_sec": t, "reason": r} for t, r in dropped.frames]
         )
-    ctx.log.info(
+    ctx.log.info(  # measured on every job: how deep the notes are and how far frames spread
         "synthesis_saved",
         chunks=len(chunks),
         candidates=len(images),
         sections=len(synthesis.sections),
+        bullets=sum(len(s.bullets) for s in synthesis.sections),
+        words=_words(synthesis),
         frames=len(synthesis.frames),
+        largest_gap_s=largest_gap([f.t_sec for f in synthesis.frames], meta.duration_sec),
     )
     return StageOutcome(
         summary={
@@ -143,13 +161,20 @@ def _load_images(job_dir: Path, candidates: list[Candidate]) -> list[CandidateIm
     ]
 
 
+@dataclass(frozen=True)
+class _Budget:
+    frames: tuple[int, int]  # least and most picks for the part
+    notes: NotesFloor  # least sections, and bullets per section
+    slots: tuple[FrameSlot, ...]  # where the required picks must come from
+
+
 async def _synthesize(
     ctx: StageContext,
     llm: LlmProvider,
     meta: VideoMeta,
     chunk: Chunk,
     total: int,
-    frames: tuple[int, int],
+    budget: _Budget,
     shown: list[CandidateImage],
     dropped: Dropped,
 ) -> Synthesis:
@@ -161,8 +186,10 @@ async def _synthesize(
             chunk,
             total,
             language=ctx.settings.notes_language,
-            min_frames=frames[0],
-            max_frames=frames[1],
+            min_frames=budget.frames[0],
+            max_frames=budget.frames[1],
+            floor=budget.notes,
+            slots=budget.slots,
             candidates=shown,
             problem=problem,
         )
@@ -175,6 +202,7 @@ async def _synthesize(
                 "llm_output_invalid", chunk=chunk.index, repair=attempt, problem=problem
             )
             continue
+        _check_floor(ctx, chunk, part, budget.notes)
         if not shown:
             return part
         return snap_to_candidates(
@@ -188,6 +216,31 @@ async def _synthesize(
         f"unusable LLM output for part {chunk.index + 1}: {problem}",
         api=ExternalApi.LLM,
     )
+
+
+def _check_floor(ctx: StageContext, chunk: Chunk, part: Synthesis, floor: NotesFloor) -> None:
+    """Gemini enforces the floor while decoding; a provider that doesn't is logged, not
+    re-asked (a repair would spend another request of the daily quota on wording)."""
+    thin = sum(len(s.bullets) < floor.bullets for s in part.sections)
+    if len(part.sections) < floor.sections or thin:
+        ctx.log.warning(
+            "notes_below_floor",
+            chunk=chunk.index,
+            sections=len(part.sections),
+            thin_sections=thin,
+            floor_sections=floor.sections,
+            floor_bullets=floor.bullets,
+        )
+
+
+def largest_gap(times: list[int], duration_s: int) -> int:
+    """Longest stretch of the video (start and end included) with no frame in it."""
+    marks = [0, *sorted(times), max(duration_s, 0)]
+    return max(b - a for a, b in itertools.pairwise(marks))
+
+
+def _words(synthesis: Synthesis) -> int:
+    return sum(len(bullet.split()) for s in synthesis.sections for bullet in s.bullets)
 
 
 def _read(path: Path) -> object:

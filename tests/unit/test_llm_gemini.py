@@ -260,6 +260,36 @@ async def test_later_attempts_hand_an_overloaded_primary_over_to_the_fallback(
     assert len(limiter.calls) == 3
 
 
+async def test_the_fallback_model_gets_its_own_thinking_level_and_timeout() -> None:
+    sent: list[tuple[str, str, str]] = []  # model, thinking level, X-Server-Timeout
+
+    def record(then: Responder) -> Responder:
+        def respond(request: httpx.Request) -> httpx.Response:
+            thinking = json.loads(request.content)["generationConfig"]["thinkingConfig"]
+            level = thinking["thinking_level"]  # the SDK sends this one in snake_case
+            model = request.url.path.rsplit("/", 1)[-1].split(":")[0]
+            sent.append((model, level, request.headers["x-server-timeout"]))
+            return then(request)
+
+        return respond
+
+    provider = GeminiProvider(
+        FakeLimiter(),
+        api_key="test-key",
+        model=PRIMARY,
+        fallback_model=FALLBACK,
+        thinking_level="low",
+        timeout_s=240,
+        fallback_thinking_level="medium",
+        fallback_timeout_s=90,
+        fallback_on_overload=True,
+        base_url="http://llm.test",
+        http_client=httpx.AsyncClient(transport=Scripted(record(HIGH_DEMAND), record(_ok()))),
+    )
+    await provider.generate_json(REQUEST)
+    assert sent == [(PRIMARY, "LOW", "240"), (FALLBACK, "MEDIUM", "90")]
+
+
 async def test_a_rejected_request_never_falls_back() -> None:
     transport = Scripted(_error(400, "INVALID_ARGUMENT", "bad schema"))
     with pytest.raises(PermanentError):
