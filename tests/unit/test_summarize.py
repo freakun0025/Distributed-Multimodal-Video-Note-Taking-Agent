@@ -92,7 +92,7 @@ async def test_notes_are_written_and_frames_requested_recorded(tmp_path: Path) -
 async def test_an_18_minute_lecture_must_get_deep_notes_and_at_least_6_frames(
     tmp_path: Path,
 ) -> None:
-    # 55 lines x 20 s = 0..1100 s: one part, so its floor is 6 sections x 5 bullets (CP7c).
+    # 55 lines x 20 s = 0..1100 s: one part, so its floor is 7 sections x 7 bullets (D37).
     ctx = _context(tmp_path, segments=55, video_seconds=1088)
     llm = ScriptedLlm(json.dumps(VALID))
     await summarize(ctx, llm)
@@ -100,9 +100,9 @@ async def test_an_18_minute_lecture_must_get_deep_notes_and_at_least_6_frames(
     (request,) = llm.requests
     properties = request.schema["properties"]
     assert (properties["frames"]["minItems"], properties["frames"]["maxItems"]) == (6, 8)
-    assert properties["sections"]["minItems"] == 6
-    assert properties["sections"]["items"]["properties"]["bullets"]["minItems"] == 5
-    assert "at least 6, more if the part covers more topics" in request.system
+    assert properties["sections"]["minItems"] == 7
+    assert properties["sections"]["items"]["properties"]["bullets"]["minItems"] == 7
+    assert "at least 7, more if the part covers more topics" in request.system
     assert "between 6 and 8 moments" in request.system
     # One required frame per 3-minute stretch, the last ending at the video's last second.
     stretches = [item["properties"]["t_sec"] for item in properties["frames"]["prefixItems"]]

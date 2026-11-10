@@ -130,14 +130,33 @@ def test_the_prompt_asks_for_revision_depth_with_a_short_recap() -> None:
         floor=NotesFloor(sections=6, bullets=5),
     )
     system = request.system
-    assert "revise this material from your notes alone" in system
+    assert "revise this material from your notes instead of watching the video again" in system
     assert "summary: 2-4 sentences" in system
     assert "at least 6, more if the part covers more topics" in system
-    assert "at least 5 bullets" in system
+    assert "at least 5 in each section, and as many more as the topic needs" in system
     for must in ("definition", "formula", "ordered steps", "actual numbers", "pitfalls"):
         assert must in system
     assert "concise" not in system  # the CP7b wording that produced 9-bullet notes
     assert request.schema["properties"]["sections"]["minItems"] == 6
+
+
+def test_the_prompt_asks_for_complete_notes_without_padding() -> None:
+    # D37: Gemini 3 answers briefly unless asked for detail, and wrote exactly the floor with
+    # whole topics dropped; a higher floor then drew commentary the speaker never made.
+    meta = VideoMeta(video_id="v", title="Trees", duration_sec=600)
+    chunk = Chunk(index=0, start_sec=0, end_sec=600, lines=("[0:00] hi",), starts=(0.0,))
+    system = synthesis_request(
+        meta, chunk, 1, language="English", min_frames=3, max_frames=8
+    ).system
+    assert "Every teaching point of the part goes into the notes" in system
+    assert "Shorten the wording, never the content" in system
+    assert "Longer, more detailed notes are better" in system
+    assert "Never pad: every bullet adds a new point" in system
+    assert "the final topics get as much detail as the first ones" in system
+    assert 'Start a definition with the term and a colon ("Photosynthesis: ...")' in system
+    assert "common mistakes the speaker gives" in system  # never an invented pitfall
+    for tag in ("role", "completeness", "content", "format", "frames", "output"):
+        assert system.count(f"<{tag}>") == system.count(f"</{tag}>") == 1
 
 
 def test_the_prompt_fits_any_subject_and_asks_for_specifics_only_where_present() -> None:
@@ -147,7 +166,7 @@ def test_the_prompt_fits_any_subject_and_asks_for_specifics_only_where_present()
         meta, chunk, 1, language="English", min_frames=3, max_frames=8
     ).system
     always, _, when_present = system.partition("Whenever the part contains them")
-    for core in ("key concept", "argument, explanation or mechanism", "trade-offs", "takeaways"):
+    for core in ("key concept", "how and why: the mechanism", "trade-offs", "takeaways"):
         assert core in always
     for specific in ("formulas", "actual numbers", "code", "dates", "order of events"):
         assert specific in when_present
@@ -175,11 +194,18 @@ def test_the_request_states_language_frame_budget_and_time_window() -> None:
     assert "Part 2 of 2, from 9:50 to 20:00" in request.prompt
     assert "[9:50] so the leader" in request.prompt
     assert "could not be used" not in request.prompt
+    # The task is restated after the transcript (Google's guide: instructions after a long
+    # context), so the prompt ends with it.
+    assert request.prompt.endswith(
+        "Based on the transcript above, write the study notes for part 2 of 2 (9:50 to 20:00), "
+        "following the rules: every teaching point, in the video's order, in full detail."
+    )
 
     repair = synthesis_request(
         meta, chunk, 2, language="Hindi", min_frames=2, max_frames=4, problem="bad JSON"
     )
     assert "could not be used (bad JSON)" in repair.prompt
+    assert repair.prompt.index("in full detail.") < repair.prompt.index("could not be used")
 
 
 def test_picks_snap_to_the_candidate_frames_shown_or_are_dropped() -> None:
@@ -209,12 +235,8 @@ def test_candidate_frames_sit_in_the_transcript_at_their_time() -> None:
         meta, chunk, 1, language="English", min_frames=1, max_frames=2, candidates=images
     )
     order = [p.data.decode() if isinstance(p, PromptImage) else p for p in request.parts]
-    assert order[1:] == [
-        "A",
-        "\n[0:40] the leader\n[0:45] Candidate frame t_sec=45:",
-        "B",
-        "\n[1:10] votes",
-    ]
+    assert order[1:-1] == ["A", "\n[0:40] the leader\n[0:45] Candidate frame t_sec=45:", "B"]
+    assert order[-1].startswith("\n[1:10] votes\n\nBased on the transcript and frames above")
     assert order[0].endswith("[0:00] intro\n[0:15] Candidate frame t_sec=15:")
     assert request.images == (PromptImage(data=b"A"), PromptImage(data=b"B"))
     assert 'labelled "Candidate frame t_sec=N"' in request.system
@@ -234,6 +256,8 @@ def test_without_candidates_the_prompt_is_text_only() -> None:
     request = synthesis_request(meta, chunk, 1, language="English", min_frames=3, max_frames=8)
     assert len(request.parts) == 1 and request.images == ()
     assert "only have the transcript" in request.system
+    assert request.prompt.endswith("in full detail.")
+    assert "Based on the transcript above" in request.prompt
 
 
 def test_slots_make_frame_i_come_from_stretch_i_and_only_from_its_candidates() -> None:

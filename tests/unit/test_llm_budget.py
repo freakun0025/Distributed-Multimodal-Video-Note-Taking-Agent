@@ -12,18 +12,20 @@ def _settings(**overrides: Any) -> Settings:
     return Settings(_env_file=None, **overrides)  # type: ignore[call-arg]
 
 
-DEFAULTS = _settings()  # a section per 180 s, 1.5 bullets a minute, at least a frame per 180 s
+DEFAULTS = _settings()  # a section per 150 s, 2.5 bullets a minute, at least a frame per 180 s
 
 
 @pytest.mark.parametrize(
     ("span_s", "floor"),
     [
-        (1088, NotesFloor(sections=6, bullets=5)),  # the 18:08 StatQuest lecture: 30 bullets
-        (1200, NotesFloor(sections=6, bullets=5)),  # MAX_VIDEO_SECONDS
-        (648, NotesFloor(sections=3, bullets=6)),  # 10:48
-        (120, NotesFloor(sections=1, bullets=3)),
-        (300, NotesFloor(sections=1, bullets=6)),  # 7.5 bullets wanted, capped at 6
-        (30, NotesFloor(sections=1, bullets=1)),
+        (1088, NotesFloor(sections=7, bullets=7)),  # the 18:08 StatQuest lecture: 49 bullets
+        (1181, NotesFloor(sections=7, bullets=8)),  # the 19:41 history video: 56 bullets
+        (1200, NotesFloor(sections=8, bullets=7)),  # MAX_VIDEO_SECONDS
+        (648, NotesFloor(sections=4, bullets=7)),  # 10:48
+        (120, NotesFloor(sections=1, bullets=5)),
+        (300, NotesFloor(sections=2, bullets=7)),
+        (600, NotesFloor(sections=4, bullets=7)),  # 25 bullets wanted, rounded up per section
+        (30, NotesFloor(sections=1, bullets=2)),
         (0, NotesFloor(sections=1, bullets=1)),
     ],
 )
@@ -32,13 +34,13 @@ def test_the_notes_floor_grows_with_the_length_of_the_part(span_s: int, floor: N
 
 
 def test_the_floor_is_capped_to_keep_the_schema_small() -> None:
-    assert notes_floor(10 * 3600, DEFAULTS) == NotesFloor(sections=8, bullets=6)
+    assert notes_floor(10 * 3600, DEFAULTS) == NotesFloor(sections=8, bullets=8)
     custom = _settings(notes_floor_max_sections=4, notes_floor_max_bullets=3)
     assert notes_floor(10 * 3600, custom) == NotesFloor(sections=4, bullets=3)
 
 
 def test_no_bullets_per_minute_still_asks_for_one_bullet_per_section() -> None:
-    assert notes_floor(1088, _settings(notes_bullets_per_minute=0)) == NotesFloor(6, 1)
+    assert notes_floor(1088, _settings(notes_bullets_per_minute=0)) == NotesFloor(7, 1)
 
 
 @pytest.mark.parametrize(

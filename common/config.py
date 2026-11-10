@@ -140,14 +140,15 @@ class Settings(BaseSettings):
     min_frames: int = Field(default=3, ge=0)
     max_frames: int = Field(default=8, ge=0)
     min_frame_every_s: int = Field(default=180, gt=0)
-    # Revision-depth notes (CP7c, D35): each part must have at least one section per
+    # Study-notes depth (CP7c, D35, D37): each part must have at least one section per
     # NOTES_SECTION_EVERY_S and NOTES_BULLETS_PER_MINUTE bullets per minute, spread over its
-    # sections. Gemini enforces these as minItems; each counted item enlarges the schema it
-    # compiles, so the floors are capped (the prompt asks for more where the lecture has more).
-    notes_section_every_s: int = Field(default=180, gt=0)
-    notes_bullets_per_minute: float = Field(default=1.5, ge=0)
+    # sections. Gemini enforces these as minItems and every model measured writes about the
+    # floor, so the floor sets the depth (the prompt asks for more where the lecture has more).
+    # Each counted item enlarges the schema Gemini compiles, so the floors are capped.
+    notes_section_every_s: int = Field(default=150, gt=0)
+    notes_bullets_per_minute: float = Field(default=2.5, ge=0)
     notes_floor_max_sections: int = Field(default=8, ge=1)
-    notes_floor_max_bullets: int = Field(default=6, ge=1)
+    notes_floor_max_bullets: int = Field(default=8, ge=1)
     # Frames closer together than this show the same slide; the later one is dropped.
     frame_min_gap_s: int = Field(default=10, ge=0)
     # EXTRACT_FRAMES (ARCHITECTURE §8.3, D33): one download at this height, then per pick
