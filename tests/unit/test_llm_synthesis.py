@@ -155,8 +155,12 @@ def test_the_prompt_fits_any_subject_and_asks_for_specifics_only_where_present()
     assert "lecture or tutorial" in system
     assert "history, the humanities" in system
     assert "Leave out sponsor messages, channel promotion" in system  # a Patreon bullet, CP7c
-    # A history lecture got correct but unsaid dates (490 BC, 1066, 1492...) from the model.
-    assert "Never add one from your own knowledge, even a correct and well-known one" in system
+    # The video is the source, but certain standard background may be added (a history lecture
+    # got correct dates the speaker left out, which the user wants); no subject-specific ban.
+    assert "The video is the source" in system
+    assert "never contradict it" in system
+    assert "only if you are certain it is correct" in system
+    assert "add no outside facts" not in system
     assert "exam-revision" not in system  # not only for exam subjects
 
 

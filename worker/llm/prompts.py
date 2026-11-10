@@ -45,13 +45,13 @@ with names, commands and code written exactly as given;
   - names, dates, places and figures, and the order of events (for example "In 1869 the Suez \
 Canal opened, so ships from Europe could reach India without sailing around Africa").
   Leave out a kind of detail the part does not have; never make one up.
-- Every name, date, number and formula in the notes must be said in the transcript or visible \
-in a candidate frame. Never add one from your own knowledge, even a correct and well-known one: \
-if the speaker gives no date for an event, write the event without a date.
+- The video is the source: cover what it says and shows, and never contradict it. Where a short \
+piece of standard background makes a point clearer or easier to place (a full name, date, unit, \
+place or standard term the speaker leaves out), you may add it, but only if you are certain it \
+is correct. Add no topics the video does not cover.
 - Each bullet is one self-contained fact, step or result, in a full sentence. State the content \
 itself; no filler such as "the video explains" or "the speaker discusses".
 - Leave out sponsor messages, channel promotion and requests to like, subscribe, buy or donate.
-- Use only what is said in the transcript or shown on screen; add no outside facts.
 {frames_rule}
 - For each frame: t_sec is whole seconds from the start of the video and must lie between \
 {start_sec} and {end_sec}; reason says which note the picture illustrates and why it helps.
