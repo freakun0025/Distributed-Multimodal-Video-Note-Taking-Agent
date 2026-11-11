@@ -1,69 +1,18 @@
-"""M1 stub stages, the atomic artefact writer and StageOutcome guards."""
+"""The stage registry, the atomic artefact writer and StageOutcome guards."""
 
 import json
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
 
-from common.config import Settings
-from common.logging import get_logger
-from common.models import StageMessage
-from common.state import JobStatus, Stage
-from tests.unit.fakes import FakeLimiter, MemoryModelHealth
+from common.state import Stage
 from worker.artifacts import write_json, write_json_atomic
-from worker.context import JobRecord, StageContext, StageOutcome
+from worker.context import StageOutcome
 from worker.stages import STAGES
 
 
 def test_every_stage_has_an_implementation() -> None:
     assert set(STAGES) == set(Stage)
-
-
-# Stages still stubbed; each real stage drops out of this list as it lands (ROADMAP M2).
-STUB_STAGES = [Stage.PUBLISH]
-
-
-@pytest.mark.parametrize("stage", STUB_STAGES)
-async def test_stub_stage_reports_progress_and_writes_its_artefact(
-    tmp_path: Path, stage: Stage
-) -> None:
-    job_id = uuid4()
-    progress: list[float] = []
-
-    async def report(fraction: float) -> None:
-        progress.append(fraction)
-
-    ctx = StageContext(
-        job=JobRecord(
-            id=job_id,
-            video_id="dQw4w9WgXcQ",
-            youtube_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-            status=JobStatus.QUEUED,
-            progress=0,
-            video_title=None,
-            duration_sec=None,
-            notion_parent_id=None,
-            notion_page_id=None,
-            notion_page_url=None,
-            warnings=(),
-            enqueued_at=None,
-        ),
-        message=StageMessage(job_id=job_id, stage=stage, attempt=2, notion_token_enc="enc"),
-        job_dir=tmp_path / str(job_id),
-        settings=Settings(_env_file=None, stub_stage_seconds=0),  # type: ignore[call-arg]
-        log=get_logger(),
-        report_progress=report,
-        limiter=FakeLimiter(),
-        model_health=MemoryModelHealth(),
-    )
-    outcome = await STAGES[stage](ctx)
-    assert progress == [0.25, 0.5, 0.75, 1.0]
-    artefact = ctx.job_dir / outcome.summary["artefact"]
-    assert json.loads(artefact.read_text(encoding="utf-8")) == {
-        "stage": stage.value,
-        "attempt": 2,
-    }
 
 
 def test_atomic_write_replaces_the_file_and_leaves_no_temp_files(tmp_path: Path) -> None:

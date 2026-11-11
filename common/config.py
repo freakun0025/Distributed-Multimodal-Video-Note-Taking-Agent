@@ -129,6 +129,8 @@ class Settings(BaseSettings):
     notion_redirect_uri: str | None = None
     notion_default_parent_id: str | None = None
     notion_api_version: str = "2026-03-11"
+    notion_api_url: str = "https://api.notion.com"  # FAKE_APIS=true uses {FAKES_URL}/notion
+    notion_timeout_s: float = Field(default=30, gt=0)  # per request; uploads are small JPEGs
 
     # Security
     token_encryption_key: SecretStr | None = None
@@ -194,8 +196,6 @@ class Settings(BaseSettings):
     # Where the fakes service listens (profile `fakes`); used only when FAKE_APIS=true.
     fakes_url: str = "http://fakes:8090"
     log_level: str = "INFO"
-    # M1 stub stages sleep this long; removed once every stage is real (M2).
-    stub_stage_seconds: float = Field(default=3, ge=0)
 
     @field_validator("retry_delays", mode="before")
     @classmethod

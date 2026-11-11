@@ -1,6 +1,5 @@
-"""Jobs through the real gateway, broker, Postgres and >= 2 workers. TRANSCRIBE, SUMMARIZE and
-EXTRACT_FRAMES run for real against the fakes service (FAKE_APIS=true); PUBLISH is still an M1
-stub.
+"""Jobs through the real gateway, broker, Postgres and >= 2 workers. Every stage runs for real
+against the fakes service (FAKE_APIS=true): YouTube, the LLM and Notion (PUBLISH, CP8).
 
 The kill test SIGKILLs a worker container with the docker CLI, so it needs `docker` on PATH.
 """
@@ -18,13 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from common.db import job_events, jobs, stage_checkpoints
 from common.state import STAGE_ORDER, TERMINAL_STATUSES
-from tests.integration.conftest import VIDEO_URL, JobRows
+from tests.integration.conftest import FAKES_URL, VIDEO_URL, JobRows
 
 pytestmark = pytest.mark.integration
 
 BODY = {"youtube_url": VIDEO_URL, "notion_token": "integration-test-token"}
-# Fake-backed TRANSCRIBE/SUMMARIZE, two stub stages, queueing behind other jobs, and the LLM
-# limiter spacing calls at LLM_RPM (a waiting job may sit in a 30 s delay queue).
+# Fake-backed stages, queueing behind other jobs, and the LLM limiter spacing calls at LLM_RPM
+# (a waiting job may sit in a 30 s delay queue).
 JOB_TIMEOUT_S = 180
 
 
@@ -58,6 +57,13 @@ async def _checkpoints(engine: AsyncEngine, job_id: UUID) -> list[str]:
             select(stage_checkpoints.c.stage).where(stage_checkpoints.c.job_id == job_id)
         )
         return sorted(rows.all())
+
+
+async def _notion_pages(job_id: UUID) -> list[dict[str, Any]]:
+    """The fake Notion's pages for this job (title ends with the job tag)."""
+    async with httpx.AsyncClient(base_url=FAKES_URL, timeout=5) as fakes:
+        pages: list[dict[str, Any]] = (await fakes.get("/_control/notion/pages")).json()
+    return [page for page in pages if page["title"].endswith(f" · #{str(job_id)[:8]}")]
 
 
 def _transitions(events: list[dict[str, Any]]) -> list[tuple[str, str]]:
@@ -106,6 +112,14 @@ async def test_job_reaches_completed_through_every_stage(
             )
         )
     assert notes is not None and notes["candidates"] >= frames["frames_requested"]
+    # PUBLISH (CP8): one page, laid out as decided (video, link, summary, linked headings with
+    # their frames, self-test toggles), every captured frame uploaded, the URL on the results.
+    (page,) = await _notion_pages(job_id)
+    assert page["blocks"][:3] == ["video", "callout", "paragraph"]
+    assert page["blocks"].count("image") == frames["frames_ok"] == row["frames_published"]
+    assert "toggle" in page["blocks"] and page["blocks"][-1] == "toggle"
+    assert row["notion_page_id"] == page["id"]
+    assert results.json()["result"]["notion_page_url"] == row["notion_page_url"]
 
 
 async def test_concurrent_jobs_are_shared_between_workers(
@@ -159,3 +173,4 @@ async def test_killing_the_worker_mid_stage_still_completes_the_job_once(
     # Each stage checkpointed exactly once, and the job finished exactly once.
     assert await _checkpoints(engine, job_id) == sorted(stage.value for stage in STAGE_ORDER)
     assert [t for t in _transitions(events) if t[1] == "COMPLETED"] == [("PUBLISHING", "COMPLETED")]
+    assert len(await _notion_pages(job_id)) == 1  # and published exactly one page

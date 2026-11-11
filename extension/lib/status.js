@@ -45,7 +45,7 @@
     STT_UNAVAILABLE: "This video has no captions and speech-to-text was unavailable.",
     INTERNAL_ERROR: "Something went wrong on our side.",
     INVALID_URL: "That is not a YouTube video link.",
-    MISSING_NOTION_TOKEN: "Connect Notion first: add your token in the extension settings.",
+    MISSING_NOTION_TOKEN: "Connect Notion first: open the extension settings and click Connect Notion.",
     VIDEO_TOO_LONG: "This video is longer than 20 minutes, so it can't be turned into notes.",
     VIDEO_UNSUPPORTED: "This kind of video (for example a live stream) isn't supported.",
     NO_TRANSCRIPT: "This video has no transcript we could use.",
@@ -59,7 +59,12 @@
     BROKER_UNAVAILABLE: "The notes server couldn't queue the job right now. Try again in a moment.",
     VALIDATION_ERROR: "The notes server didn't accept the request.",
     // Extension-side codes.
-    NO_TOKEN: "Add your Notion token in the extension settings first.",
+    NO_TOKEN: "Connect Notion first: open the extension settings and click Connect Notion.",
+    OAUTH_CANCELLED: "Notion sign-in was cancelled, so nothing was sent.",
+    OAUTH_STATE_MISMATCH: "Notion's answer didn't match our sign-in request, so it was ignored. Try again.",
+    OAUTH_FAILED: "Connecting to Notion failed. Please try again.",
+    OAUTH_REDIRECT_MISMATCH:
+      "This extension's ID doesn't match the server's Notion redirect URI (NOTION_REDIRECT_URI in .env).",
     GATEWAY_UNREACHABLE: "Can't reach the notes server. Is the stack running?",
     GATEWAY_ERROR: "The notes server returned an unexpected response.",
     JOB_GONE: "This job no longer exists on the notes server.",

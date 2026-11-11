@@ -38,7 +38,7 @@ test("every file the manifest names exists", () => {
 test("the service worker imports scripts that exist, shared libraries first", () => {
   const match = readRepoFile("extension/background.js").match(/importScripts\(([^)]*)\)/);
   const files = [...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(files, ["config.js", "lib/status.js", "lib/jobs.js", "lib/api.js"]);
+  assert.deepEqual(files, ["config.js", "lib/status.js", "lib/jobs.js", "lib/api.js", "lib/oauth.js"]);
   for (const file of files) assert.ok(exists(file), file);
 });
 

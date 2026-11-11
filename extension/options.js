@@ -1,6 +1,6 @@
-// Options page (ARCHITECTURE §11): gateway URL, Notion token and optional parent page ID in
-// chrome.storage.local. Until the Notion OAuth flow lands (ROADMAP M2) the token is pasted here.
-// The saved token is never put back into the page; an empty field keeps it.
+// Options page (ARCHITECTURE §11): gateway URL, the Notion connection (OAuth, F-7) and an optional
+// parent page, in chrome.storage.local. Connecting runs in the background worker, the same code
+// path as the first Take Notes click; the token is never shown here.
 (() => {
   "use strict";
 
@@ -13,45 +13,65 @@
     $("status").dataset.kind = kind;
   }
 
-  function showTokenState(saved) {
-    $("token").value = "";
-    $("token").placeholder = saved ? "Saved — paste a new one to replace it" : "Paste your token";
-    $("forget").disabled = !saved;
+  async function showNotionState() {
+    const { notionToken, notionWorkspace } = await chrome.storage.local.get(["notionToken", "notionWorkspace"]);
+    $("notion-state").textContent = notionToken
+      ? `Connected${notionWorkspace ? ` to ${notionWorkspace}` : ""}.`
+      : "Not connected. Take Notes will ask you to connect on the first click.";
+    $("connect").textContent = notionToken ? "Reconnect" : "Connect Notion";
+    $("disconnect").disabled = !notionToken;
   }
 
   async function load() {
-    const stored = await chrome.storage.local.get(["gatewayUrl", "notionToken", "notionParentId"]);
+    const stored = await chrome.storage.local.get(["gatewayUrl", "notionParentId"]);
     $("gateway").value = stored.gatewayUrl || CONFIG.defaultGatewayUrl;
     $("parent").value = stored.notionParentId || "";
-    showTokenState(Boolean(stored.notionToken));
+    await showNotionState();
+  }
+
+  /** Saves the gateway URL and parent page; false (with a message) if the URL is invalid. */
+  async function saveFields() {
+    const { url, error } = normalizeGatewayUrl($("gateway").value);
+    if (error) {
+      say(error, "error");
+      return false;
+    }
+    await chrome.storage.local.set({ gatewayUrl: url, notionParentId: $("parent").value.trim() });
+    $("gateway").value = url;
+    return true;
+  }
+
+  async function ask(message) {
+    try {
+      return await chrome.runtime.sendMessage(message);
+    } catch {
+      return { ok: false, message: "The extension's background worker did not answer. Reload the extension." };
+    }
   }
 
   async function save(event) {
     event.preventDefault();
-    const { url, error } = normalizeGatewayUrl($("gateway").value);
-    if (error) {
-      say(error, "error");
-      return;
-    }
-    const update = { gatewayUrl: url, notionParentId: $("parent").value.trim() };
-    const token = $("token").value.trim();
-    if (token) update.notionToken = token;
-    await chrome.storage.local.set(update);
-    const { notionToken } = await chrome.storage.local.get("notionToken");
-    $("gateway").value = url;
-    showTokenState(Boolean(notionToken));
-    say(notionToken ? "Saved." : "Saved. Add a Notion token before taking notes.", notionToken ? "ok" : "error");
+    if (await saveFields()) say("Saved.", "ok");
+  }
+
+  async function connect() {
+    if (!(await saveFields())) return; // the connection goes through the gateway typed here
+    say("Waiting for Notion…");
+    const response = await ask({ type: "CONNECT_NOTION" });
+    await showNotionState();
+    if (response?.ok) say(`Connected${response.workspace ? ` to ${response.workspace}` : ""}.`, "ok");
+    else say(response?.message ?? "Something went wrong.", "error");
+  }
+
+  async function disconnect() {
+    await ask({ type: "DISCONNECT_NOTION" });
+    await showNotionState();
+    say("Disconnected. The next Take Notes click asks you to connect again.", "ok");
   }
 
   async function test() {
     say("Checking…");
-    let response;
-    try {
-      response = await chrome.runtime.sendMessage({ type: "HEALTH", gatewayUrl: $("gateway").value });
-    } catch {
-      say("The extension's background worker did not answer. Reload the extension.", "error");
-      return;
-    }
+    const response = await ask({ type: "HEALTH", gatewayUrl: $("gateway").value });
     if (!response?.ok) {
       say(response?.message ?? "Something went wrong.", "error");
       return;
@@ -63,14 +83,9 @@
     else say(`The server answered, but these are down: ${down.join(", ")}.`, "error");
   }
 
-  async function forget() {
-    await chrome.storage.local.remove("notionToken");
-    showTokenState(false);
-    say("Token removed.", "ok");
-  }
-
   $("form").addEventListener("submit", save);
   $("test").addEventListener("click", test);
-  $("forget").addEventListener("click", forget);
+  $("connect").addEventListener("click", connect);
+  $("disconnect").addEventListener("click", disconnect);
   load();
 })();

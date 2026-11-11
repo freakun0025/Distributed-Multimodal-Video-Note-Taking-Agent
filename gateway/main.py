@@ -17,9 +17,10 @@ from common.broker import BrokerPublisher
 from common.config import Settings, get_settings
 from common.crypto import TokenCipher
 from common.db import create_engine
+from common.limiter import RateLimiter, buckets_from_settings
 from common.logging import get_logger
 from gateway.errors import install_error_handlers
-from gateway.routes import health, jobs
+from gateway.routes import auth, health, jobs
 from gateway.sweeper import run_sweeper
 
 log = get_logger()
@@ -41,6 +42,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app_settings.broker_publish_timeout_s,
         )
         app.state.engine = engine
+        # OAuth calls to Notion take a limiter token like every other external call (inv. 6).
+        app.state.limiter = RateLimiter(
+            redis, buckets_from_settings(app_settings), app_settings.limiter_max_wait_s
+        )
         app.state.publisher = publisher
         app.state.health_checks = health.default_checks(
             engine, redis, app_settings.rabbitmq_url, app_settings.healthcheck_timeout_s
@@ -65,6 +70,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_error_handlers(app)
     app.include_router(jobs.router)
     app.include_router(health.router)
+    app.include_router(auth.router)
     return app
 
 

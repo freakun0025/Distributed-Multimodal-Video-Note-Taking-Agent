@@ -145,6 +145,14 @@ class HealthResponse(BaseModel):
     redis: ComponentHealth
 
 
+class NotionClientConfig(BaseModel):
+    """What the extension needs to start the OAuth flow; both are public (they appear in the
+    authorize URL). The client secret never leaves the gateway (D10)."""
+
+    client_id: str
+    redirect_uri: str
+
+
 class NotionExchangeRequest(BaseModel):
     code: str = Field(min_length=1, repr=False)
 

@@ -18,6 +18,10 @@
     toastMs: 5000,
     // Gateway requests give up after this long.
     requestTimeoutMs: 10000,
+    // Notion's OAuth consent page, and the path of our redirect URI
+    // (https://<extension-id>.chromiumapp.org/notion, registered in the Notion connection).
+    notionAuthorizeUrl: "https://api.notion.com/v1/oauth/authorize",
+    notionRedirectPath: "notion",
     // Player toolbar, most specific first (YouTube changes its DOM; the first match wins).
     toolbarSelectors: ["#movie_player .ytp-right-controls", ".ytp-right-controls"],
   });

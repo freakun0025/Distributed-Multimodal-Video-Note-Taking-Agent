@@ -13,18 +13,24 @@
       <input id="gateway" name="gateway" type="url" autocomplete="off" spellcheck="false">
       <p class="hint">Where the gateway runs (localhost or 127.0.0.1 only).</p>
 
-      <label for="token">Notion token</label>
-      <input id="token" name="token" type="password" autocomplete="off" spellcheck="false">
-      <p class="hint" id="token-hint">Stored only in this browser and sent with each job; the server never stores it.</p>
+      <label for="connect">Notion</label>
+      <p class="hint" id="notion-state">Not connected.</p>
+      <div class="actions">
+        <button id="connect" type="button">Connect Notion</button>
+        <button id="disconnect" type="button" class="secondary">Disconnect</button>
+      </div>
+      <p class="hint">Opens Notion's sign-in. Pick the page your notes go under (e.g. "Video Notes") and
+        click Allow access. The access token stays in this browser and is sent with each job; the
+        server never stores it.</p>
 
-      <label for="parent">Notion parent page ID <span class="optional">(optional)</span></label>
+      <label for="parent">Notion parent page <span class="optional">(optional)</span></label>
       <input id="parent" name="parent" type="text" autocomplete="off" spellcheck="false">
-      <p class="hint">Leave empty to publish to the server's default page.</p>
+      <p class="hint">A page link or ID, shared with the connection. Leave empty to publish to the
+        server's default page.</p>
 
       <div class="actions">
         <button id="save" type="submit">Save</button>
         <button id="test" type="button" class="secondary">Test connection</button>
-        <button id="forget" type="button" class="secondary">Remove token</button>
       </div>
       <p id="status" class="status" role="status"></p>
     </form>

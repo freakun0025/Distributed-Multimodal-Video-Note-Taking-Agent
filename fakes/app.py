@@ -12,6 +12,7 @@ import asyncio
 import json
 import math
 import re
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -230,3 +231,175 @@ def notes_from_transcript(
             for t, _ in picks
         ],
     }
+
+
+# --- Notion: the calls PUBLISH and the gateway's OAuth exchange make (ARCHITECTURE §8.4, §11) ---
+
+# One in-memory workspace: every block (pages included) by id, and each parent's children in order.
+_notion_blocks: dict[str, dict[str, Any]] = {}
+_notion_children: dict[str, list[str]] = {}
+_notion_uploads: dict[str, str] = {}  # file upload id -> "pending" | "uploaded"
+_NOTION_MAX_CHILDREN = 100
+BAD_OAUTH_CODE = "bad-code"  # the code Notion rejects (invalid_grant)
+
+
+def _notion_error(status: int, code: str, message: str) -> JSONResponse:
+    body = {"object": "error", "status": status, "code": code, "message": message}
+    return JSONResponse(status_code=status, content=body)
+
+
+def _signed_in(request: Request) -> bool:
+    auth = request.headers.get("authorization", "")
+    return auth.startswith("Bearer ") and len(auth) > len("Bearer ")
+
+
+def _new_id() -> str:
+    return str(uuid.uuid4())
+
+
+@app.put("/_control/notion")
+async def control_notion() -> dict[str, int]:
+    """Empty the fake workspace."""
+    _notion_blocks.clear()
+    _notion_children.clear()
+    _notion_uploads.clear()
+    return {"blocks": 0}
+
+
+@app.get("/_control/notion/pages")
+async def notion_pages() -> list[dict[str, Any]]:
+    """Every page with its title, parent and the types of its top-level blocks, for itests."""
+    return [
+        {
+            "id": block["id"],
+            "title": block["child_page"]["title"],
+            "parent": block["parent"],
+            "blocks": [_notion_blocks[i]["type"] for i in _notion_children.get(block["id"], [])],
+        }
+        for block in _notion_blocks.values()
+        if block["type"] == "child_page"
+    ]
+
+
+@app.post("/notion/v1/oauth/token", response_model=None)
+async def notion_token(request: Request) -> dict[str, Any] | JSONResponse:
+    if not request.headers.get("authorization", "").startswith("Basic "):
+        return JSONResponse(status_code=401, content={"error": "invalid_client"})
+    body = await request.json()
+    if body.get("grant_type") == "authorization_code" and body.get("code") == BAD_OAUTH_CODE:
+        return JSONResponse(status_code=400, content={"error": "invalid_grant"})
+    return {
+        "access_token": f"fake-notion-token-{uuid.uuid4().hex[:8]}",
+        "token_type": "bearer",
+        "refresh_token": f"fake-refresh-{uuid.uuid4().hex[:8]}",
+        "bot_id": _new_id(),
+        "workspace_id": _new_id(),
+        "workspace_name": "Fake workspace",
+        "workspace_icon": None,
+        "owner": {"type": "workspace", "workspace": True},
+        "duplicated_template_id": None,
+    }
+
+
+@app.post("/notion/v1/pages", response_model=None)
+async def notion_create_page(request: Request) -> dict[str, Any] | JSONResponse:
+    if not _signed_in(request):
+        return _notion_error(401, "unauthorized", "API token is invalid.")
+    body = await request.json()
+    parent = (body.get("parent") or {}).get("page_id")
+    title = "".join(
+        part.get("text", {}).get("content", "")
+        for part in body.get("properties", {}).get("title", {}).get("title", [])
+    )
+    if not parent:
+        return _notion_error(400, "validation_error", "parent.page_id is required")
+    page_id = _new_id()
+    _notion_blocks[page_id] = {
+        "object": "block",
+        "id": page_id,
+        "type": "child_page",
+        "child_page": {"title": title},
+        "parent": parent,
+    }
+    _notion_children.setdefault(parent, []).append(page_id)
+    return {"object": "page", "id": page_id, "url": _page_url(page_id)}
+
+
+@app.get("/notion/v1/pages/{page_id}", response_model=None)
+async def notion_page(page_id: str, request: Request) -> dict[str, Any] | JSONResponse:
+    if not _signed_in(request):
+        return _notion_error(401, "unauthorized", "API token is invalid.")
+    if page_id not in _notion_blocks:
+        return _notion_error(404, "object_not_found", f"Could not find page {page_id}.")
+    return {"object": "page", "id": page_id, "url": _page_url(page_id)}
+
+
+@app.get("/notion/v1/blocks/{block_id}/children", response_model=None)
+async def notion_children(block_id: str, request: Request) -> dict[str, Any] | JSONResponse:
+    if not _signed_in(request):
+        return _notion_error(401, "unauthorized", "API token is invalid.")
+    ids = _notion_children.get(block_id, [])
+    size = min(int(request.query_params.get("page_size", _NOTION_MAX_CHILDREN)), 100)
+    start = int(request.query_params.get("start_cursor") or 0)
+    end = start + size
+    return {
+        "object": "list",
+        "results": [_public(_notion_blocks[i]) for i in ids[start:end]],
+        "has_more": end < len(ids),
+        "next_cursor": str(end) if end < len(ids) else None,
+    }
+
+
+@app.patch("/notion/v1/blocks/{block_id}/children", response_model=None)
+async def notion_append(block_id: str, request: Request) -> dict[str, Any] | JSONResponse:
+    if not _signed_in(request):
+        return _notion_error(401, "unauthorized", "API token is invalid.")
+    children = (await request.json()).get("children", [])
+    if len(children) > _NOTION_MAX_CHILDREN:
+        return _notion_error(400, "validation_error", "body.children.length should be ≤ 100")
+    for child in children:
+        upload = (child.get("image") or {}).get("file_upload")
+        if upload and _notion_uploads.get(upload.get("id")) != "uploaded":
+            return _notion_error(400, "validation_error", "file upload is not uploaded")
+    results = [_store_block(block_id, child) for child in children]
+    return {"object": "list", "results": results, "has_more": False, "next_cursor": None}
+
+
+@app.post("/notion/v1/file_uploads", response_model=None)
+async def notion_create_upload(request: Request) -> dict[str, Any] | JSONResponse:
+    if not _signed_in(request):
+        return _notion_error(401, "unauthorized", "API token is invalid.")
+    upload_id = _new_id()
+    _notion_uploads[upload_id] = "pending"
+    return {"object": "file_upload", "id": upload_id, "status": "pending"}
+
+
+@app.post("/notion/v1/file_uploads/{upload_id}/send", response_model=None)
+async def notion_send_upload(upload_id: str, request: Request) -> dict[str, Any] | JSONResponse:
+    if not _signed_in(request):
+        return _notion_error(401, "unauthorized", "API token is invalid.")
+    if _notion_uploads.get(upload_id) != "pending":
+        return _notion_error(404, "object_not_found", f"Could not find file upload {upload_id}.")
+    if not await request.body():  # multipart with the frame's bytes
+        return _notion_error(400, "validation_error", "file is required")
+    _notion_uploads[upload_id] = "uploaded"
+    return {"object": "file_upload", "id": upload_id, "status": "uploaded"}
+
+
+def _store_block(parent: str, child: dict[str, Any]) -> dict[str, Any]:
+    block_id = _new_id()
+    kind = child.get("type", "")
+    nested = (child.get(kind) or {}).get("children", [])
+    _notion_blocks[block_id] = {"object": "block", "id": block_id, "type": kind, "parent": parent}
+    _notion_children.setdefault(parent, []).append(block_id)
+    for grandchild in nested:
+        _store_block(block_id, grandchild)
+    return {"object": "block", "id": block_id}
+
+
+def _public(block: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in block.items() if key != "parent"}
+
+
+def _page_url(page_id: str) -> str:
+    return f"https://www.notion.so/{page_id.replace('-', '')}"

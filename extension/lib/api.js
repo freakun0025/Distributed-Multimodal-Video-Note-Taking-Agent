@@ -69,6 +69,18 @@
       getJob(jobId) {
         return call(`/jobs/${encodeURIComponent(jobId)}`);
       },
+      /** GET /auth/notion/config → `{client_id, redirect_uri}` for Notion's consent page. */
+      notionConfig() {
+        return call("/auth/notion/config");
+      },
+      /** POST /auth/notion/exchange → the token pair; a rejected code is OAUTH_CODE_INVALID. */
+      exchangeNotionCode(code) {
+        return call("/auth/notion/exchange", { method: "POST", body: { code } });
+      },
+      /** POST /auth/notion/refresh → a new token pair for a refresh token. */
+      refreshNotionToken(refreshToken) {
+        return call("/auth/notion/refresh", { method: "POST", body: { refresh_token: refreshToken } });
+      },
       /** GET /healthz → `{gateway, postgres, rabbitmq, redis}`; a 503 still carries the body. */
       health() {
         return call("/healthz", { okStatuses: [200, 503] });
