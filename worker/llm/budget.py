@@ -39,6 +39,24 @@ def notes_floor(span_s: int, settings: Settings) -> NotesFloor:
     return NotesFloor(sections=sections, bullets=bullets)
 
 
+@dataclass(frozen=True)
+class QuestionBudget:
+    least: int  # least self-test questions in the part
+    most: int  # most self-test questions in the part
+
+
+ONE_QUESTION = QuestionBudget(least=1, most=1)
+
+
+def question_budget(parts: int, settings: Settings) -> QuestionBudget:
+    """NOTES_QUESTIONS_MIN..MAX for the whole video, spread evenly over its parts (the merged
+    list is capped at NOTES_QUESTIONS_MAX again)."""
+    parts = max(parts, 1)
+    most = math.ceil(settings.notes_questions_max / parts)
+    least = min(math.ceil(settings.notes_questions_min / parts), most)
+    return QuestionBudget(least=least, most=most)
+
+
 def min_frames_for(duration_s: int, settings: Settings) -> int:
     """At least one frame per MIN_FRAME_EVERY_S of video, within MIN_FRAMES..MAX_FRAMES."""
     wanted = max(duration_s, 0) // settings.min_frame_every_s

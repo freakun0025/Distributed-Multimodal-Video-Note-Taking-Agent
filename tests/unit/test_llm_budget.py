@@ -5,7 +5,15 @@ from typing import Any
 import pytest
 
 from common.config import Settings
-from worker.llm.budget import FrameSlot, NotesFloor, frame_slots, min_frames_for, notes_floor
+from worker.llm.budget import (
+    FrameSlot,
+    NotesFloor,
+    QuestionBudget,
+    frame_slots,
+    min_frames_for,
+    notes_floor,
+    question_budget,
+)
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -80,3 +88,24 @@ def test_without_candidates_each_slot_is_a_range_of_seconds() -> None:
     ]
     assert frame_slots(0, 1, 5) == [FrameSlot(0, 0), FrameSlot(1, 1)]  # fewer seconds than slots
     assert frame_slots(0, 600, 0) == []
+
+
+@pytest.mark.parametrize(
+    ("parts", "budget"),
+    [
+        (1, QuestionBudget(least=5, most=8)),  # every video up to ~20 min so far: one part
+        (2, QuestionBudget(least=3, most=4)),  # 6-8 in all; the merged list is capped at 8
+        (3, QuestionBudget(least=2, most=3)),
+        (0, QuestionBudget(least=5, most=8)),
+    ],
+)
+def test_self_test_questions_are_spread_over_the_parts(parts: int, budget: QuestionBudget) -> None:
+    assert question_budget(parts, DEFAULTS) == budget
+
+
+def test_the_question_minimum_never_exceeds_the_maximum() -> None:
+    assert question_budget(4, _settings(notes_questions_min=8, notes_questions_max=8)) == (
+        QuestionBudget(least=2, most=2)
+    )
+    with pytest.raises(ValueError, match="NOTES_QUESTIONS_MIN must not exceed"):
+        _settings(notes_questions_min=9, notes_questions_max=8)

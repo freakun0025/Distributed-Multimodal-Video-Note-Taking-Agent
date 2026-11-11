@@ -25,7 +25,15 @@ from worker.candidates import Candidate, CutDetector, Grabber, detect_cuts, prep
 from worker.clients.youtube import VideoDownloader, video_source
 from worker.context import StageContext, StageOutcome
 from worker.llm.base import LlmProvider, make_provider
-from worker.llm.budget import FrameSlot, NotesFloor, frame_slots, min_frames_for, notes_floor
+from worker.llm.budget import (
+    FrameSlot,
+    NotesFloor,
+    QuestionBudget,
+    frame_slots,
+    min_frames_for,
+    notes_floor,
+    question_budget,
+)
 from worker.llm.chunking import Chunk, chunk_transcript, merge
 from worker.llm.prompts import CandidateImage, synthesis_request
 from worker.llm.synthesis import (
@@ -80,6 +88,7 @@ async def summarize(
         budget = _Budget(
             frames=(least, most),
             notes=notes_floor(chunk.end_sec - chunk.start_sec, ctx.settings),
+            questions=question_budget(len(chunks), ctx.settings),
             # One required frame per stretch of the part, so the pictures cover all of it.
             slots=tuple(
                 frame_slots(
@@ -96,6 +105,7 @@ async def summarize(
         merge(parts),
         min_gap_s=ctx.settings.frame_min_gap_s,
         max_frames=ctx.settings.max_frames,
+        max_questions=ctx.settings.notes_questions_max,
         dropped=dropped,
     )
 
@@ -104,6 +114,8 @@ async def summarize(
         ctx.log.info(
             "frames_dropped", frames=[{"t_sec": t, "reason": r} for t, r in dropped.frames]
         )
+    if dropped.starts:  # each such section took the previous section's start
+        ctx.log.warning("section_starts_unreadable", starts=dropped.starts)
     ctx.log.info(  # measured on every job: how deep the notes are and how far frames spread
         "synthesis_saved",
         chunks=len(chunks),
@@ -111,6 +123,7 @@ async def summarize(
         sections=len(synthesis.sections),
         bullets=sum(len(s.bullets) for s in synthesis.sections),
         words=_words(synthesis),
+        questions=len(synthesis.questions),
         frames=len(synthesis.frames),
         largest_gap_s=largest_gap([f.t_sec for f in synthesis.frames], meta.duration_sec),
         model=llm.answered_by,
@@ -166,6 +179,7 @@ def _load_images(job_dir: Path, candidates: list[Candidate]) -> list[CandidateIm
 class _Budget:
     frames: tuple[int, int]  # least and most picks for the part
     notes: NotesFloor  # least sections, and bullets per section
+    questions: QuestionBudget  # least and most self-test questions for the part
     slots: tuple[FrameSlot, ...]  # where the required picks must come from
 
 
@@ -190,6 +204,7 @@ async def _synthesize(
             min_frames=budget.frames[0],
             max_frames=budget.frames[1],
             floor=budget.notes,
+            questions=budget.questions,
             slots=budget.slots,
             candidates=shown,
             problem=problem,
@@ -203,7 +218,7 @@ async def _synthesize(
                 "llm_output_invalid", chunk=chunk.index, repair=attempt, problem=problem
             )
             continue
-        _check_floor(ctx, chunk, part, budget.notes)
+        _check_floor(ctx, chunk, part, budget)
         if not shown:
             return part
         return snap_to_candidates(
@@ -219,18 +234,22 @@ async def _synthesize(
     )
 
 
-def _check_floor(ctx: StageContext, chunk: Chunk, part: Synthesis, floor: NotesFloor) -> None:
+def _check_floor(ctx: StageContext, chunk: Chunk, part: Synthesis, budget: _Budget) -> None:
     """Gemini enforces the floor while decoding; a provider that doesn't is logged, not
     re-asked (a repair would spend another request of the daily quota on wording)."""
+    floor = budget.notes
     thin = sum(len(s.bullets) < floor.bullets for s in part.sections)
-    if len(part.sections) < floor.sections or thin:
+    few = len(part.questions) < budget.questions.least
+    if len(part.sections) < floor.sections or thin or few:
         ctx.log.warning(
             "notes_below_floor",
             chunk=chunk.index,
             sections=len(part.sections),
             thin_sections=thin,
+            questions=len(part.questions),
             floor_sections=floor.sections,
             floor_bullets=floor.bullets,
+            floor_questions=budget.questions.least,
         )
 
 

@@ -27,9 +27,17 @@ from worker.stages.transcribe import transcribe
 VALID = {
     "title": "Raft",
     "summary": "How Raft reaches consensus.",
-    "sections": [{"heading": "Leader election", "bullets": ["Terms", "Votes"]}],
+    "sections": [{"heading": "Leader election", "start": "0:00", "bullets": ["Terms", "Votes"]}],
+    "questions": [{"question": "Why terms?", "answer": "To spot stale leaders."}],
     "frames": [{"t_sec": 30, "caption": "State diagram.", "reason": "Shows the three states."}],
 }
+# What synthesis.json holds for VALID: the copied "0:00" start read as seconds.
+STORED = Synthesis.model_validate(
+    {
+        **VALID,
+        "sections": [{"heading": "Leader election", "start_sec": 0, "bullets": ["Terms", "Votes"]}],
+    }
+)
 
 
 class ScriptedLlm:
@@ -79,7 +87,7 @@ async def test_notes_are_written_and_frames_requested_recorded(tmp_path: Path) -
     llm = ScriptedLlm(json.dumps(VALID))
     outcome = await summarize(ctx, llm)
 
-    assert _synthesis(ctx) == Synthesis.model_validate(VALID)
+    assert _synthesis(ctx) == STORED
     assert outcome.summary == {"chunks": 1, "candidates": 0, "sections": 1, "frames_requested": 1}
     assert outcome.job_updates == {"frames_requested": 1}
     (request,) = llm.requests
@@ -167,7 +175,14 @@ async def test_long_transcripts_are_summarised_part_by_part_and_merged_in_order(
             {
                 "title": f"Part {i}",
                 "summary": f"S{i}.",
-                "sections": [{"heading": f"H{i}", "bullets": [f"b{i}"]}],
+                "sections": [
+                    {
+                        "heading": f"H{i}",
+                        "start": f"{t_sec // 60}:{t_sec % 60:02d}",
+                        "bullets": [f"b{i}"],
+                    }
+                ],
+                "questions": [{"question": f"Q{i}?", "answer": f"A{i}."} for _ in range(2)],
                 "frames": [{"t_sec": t_sec, "caption": "c", "reason": "r"}],
             }
         )
@@ -191,6 +206,19 @@ async def test_long_transcripts_are_summarised_part_by_part_and_merged_in_order(
     }
     assert bounds == {(-(-3 // chunks), -(-4 // chunks))}
     assert len(synthesis.frames) <= 4
+    # Questions spread over the parts the same way (ceil(5 / chunks) .. ceil(8 / chunks)), each
+    # asked once and at most NOTES_QUESTIONS_MAX = 8 in all.
+    asked = {
+        (
+            r.schema["properties"]["questions"]["minItems"],
+            r.schema["properties"]["questions"]["maxItems"],
+        )
+        for r in llm.requests
+    }
+    assert asked == {(-(-5 // chunks), -(-8 // chunks))}
+    assert [q.question for q in synthesis.questions] == [f"Q{i}?" for i in range(min(chunks, 8))]
+    starts = [s.start_sec for s in synthesis.sections]
+    assert starts == sorted(starts)
     assert progress[-1] == 1.0 and progress == sorted(progress)
 
 
@@ -285,4 +313,4 @@ async def test_without_candidates_the_notes_come_from_the_captions(tmp_path: Pat
     assert llm.requests[0].images == ()
     assert "only have the transcript" in llm.requests[0].system
     assert outcome.summary["candidates"] == 0
-    assert _synthesis(ctx) == Synthesis.model_validate(VALID)
+    assert _synthesis(ctx) == STORED

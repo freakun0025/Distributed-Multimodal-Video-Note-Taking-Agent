@@ -149,6 +149,10 @@ class Settings(BaseSettings):
     notes_bullets_per_minute: float = Field(default=2.5, ge=0)
     notes_floor_max_sections: int = Field(default=8, ge=1)
     notes_floor_max_bullets: int = Field(default=8, ge=1)
+    # Self-test questions (D38): NOTES_QUESTIONS_MIN..MAX per video, spread over its parts
+    # (schema minItems/maxItems per part, the merged list capped at the max again).
+    notes_questions_min: int = Field(default=5, ge=0)
+    notes_questions_max: int = Field(default=8, ge=1)
     # Frames closer together than this show the same slide; the later one is dropped.
     frame_min_gap_s: int = Field(default=10, ge=0)
     # EXTRACT_FRAMES (ARCHITECTURE §8.3, D33): one download at this height, then per pick
@@ -233,6 +237,12 @@ class Settings(BaseSettings):
         if len(set(models)) != len(models):
             raise ValueError(f"LLM_CHAIN lists a model twice: {models}")
         return value
+
+    @model_validator(mode="after")
+    def _check_questions(self) -> Settings:
+        if self.notes_questions_min > self.notes_questions_max:
+            raise ValueError("NOTES_QUESTIONS_MIN must not exceed NOTES_QUESTIONS_MAX")
+        return self
 
     @field_validator("transcript_langs", mode="before")
     @classmethod

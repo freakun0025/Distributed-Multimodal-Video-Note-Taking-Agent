@@ -1,8 +1,9 @@
 """Transcript chunking and in-order merge (ARCHITECTURE §8.2 steps 2 and 5)."""
 
 import itertools
+from collections.abc import Sequence
 
-from common.models import FramePick, Section, Synthesis, TranscriptSegment
+from common.models import FramePick, Question, Section, Synthesis, TranscriptSegment
 from worker.llm.chunking import chunk_transcript, clock, merge
 
 
@@ -41,11 +42,23 @@ def test_a_single_line_longer_than_the_limit_is_its_own_chunk() -> None:
     assert chunks[-1].lines == ("[0:20] " + "y" * 500,)
 
 
-def _part(sections: list[tuple[str, list[str]]], frames: list[int], summary: str) -> Synthesis:
+def _part(
+    sections: list[tuple[str, list[str]]],
+    frames: list[int],
+    summary: str,
+    *,
+    starts: list[int] | None = None,
+    questions: Sequence[str] = (),
+) -> Synthesis:
+    starts = starts or [0] * len(sections)
     return Synthesis(
         title=f"Notes {summary}",
         summary=summary,
-        sections=[Section(heading=h, bullets=b) for h, b in sections],
+        sections=[
+            Section(heading=h, start_sec=t, bullets=b)
+            for (h, b), t in zip(sections, starts, strict=True)
+        ],
+        questions=[Question(question=q, answer=f"A: {q}") for q in questions],
         frames=[FramePick(t_sec=t, caption=f"c{t}", reason="r") for t in frames],
     )
 
@@ -65,3 +78,26 @@ def test_merge_keeps_chunk_order_and_joins_a_section_split_across_chunks() -> No
     assert [f.t_sec for f in merged.frames] == [40, 300, 500]
     assert merged.title == "Notes First half."
     assert merged.summary == "First half. Second half."
+
+
+def test_merge_keeps_section_starts_in_order_and_asks_each_question_once() -> None:
+    merged = merge(
+        [
+            _part([("Intro", ["a"]), ("Raft", ["b"])], [], "1", starts=[0, 300],
+                  questions=["Why a leader?", "What is a term?"]),
+            # The parts overlap at the seam: a new topic may claim a start the first part covers.
+            _part([("raft", ["c"]), ("Paxos", ["e"]), ("Zab", ["f"])], [], "2",
+                  starts=[560, 280, 700], questions=["what is a term?", "Why Paxos?"]),
+        ]
+    )  # fmt: skip
+    assert [(s.heading, s.start_sec) for s in merged.sections] == [
+        ("Intro", 0),
+        ("Raft", 300),  # the continued section keeps its first start
+        ("Paxos", 300),  # never before the section above it
+        ("Zab", 700),
+    ]
+    assert [q.question for q in merged.questions] == [
+        "Why a leader?",
+        "What is a term?",
+        "Why Paxos?",
+    ]

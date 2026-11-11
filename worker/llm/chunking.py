@@ -6,7 +6,7 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from common.models import Section, Synthesis, TranscriptSegment
+from common.models import Question, Section, Synthesis, TranscriptSegment
 
 # Each chunk repeats the end of the previous one, so a point made across the boundary is seen
 # whole by at least one call.
@@ -89,7 +89,8 @@ def _tail(lines: list[_Line], max_chars: int) -> list[_Line]:
 
 def merge(parts: Sequence[Synthesis]) -> Synthesis:
     """Chunk results in chunk order: sections concatenated (a heading continued across a
-    boundary is merged), summaries joined, frames sorted by time."""
+    boundary is merged and keeps its first start), summaries joined, questions concatenated
+    without repeats, frames sorted by time."""
     sections: list[Section] = []
     for part in parts:
         for section in part.sections:
@@ -98,12 +99,22 @@ def merge(parts: Sequence[Synthesis]) -> Synthesis:
                 bullets = previous.bullets + [
                     b for b in section.bullets if b not in previous.bullets
                 ]
-                sections[-1] = Section(heading=previous.heading, bullets=bullets)
+                sections[-1] = previous.model_copy(update={"bullets": bullets})
             else:
+                if previous and section.start_sec < previous.start_sec:  # overlap at the seam
+                    section = section.model_copy(update={"start_sec": previous.start_sec})
                 sections.append(section)
+    questions: list[Question] = []
+    asked: set[str] = set()
+    for part in parts:
+        for question in part.questions:
+            if (key := question.question.strip().casefold()) not in asked:
+                asked.add(key)
+                questions.append(question)
     return Synthesis(
         title=parts[0].title,
         summary=" ".join(part.summary.strip() for part in parts if part.summary.strip()),
         sections=sections,
+        questions=questions,
         frames=sorted((f for part in parts for f in part.frames), key=lambda f: f.t_sec),
     )

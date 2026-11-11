@@ -3,7 +3,8 @@
   "name": "Video Notes Agent",
   "version": "0.1.0",
   "description": "Take Notes on a YouTube lecture and get a Notion page with real frames from the video.",
-  "permissions": ["storage", "alarms"],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA9UDjNAP08KINLdQThNzuDUzokDTQ2TEg4NILK3RlPMkLHJjt9glIvA0iS9P2Lxm2hMFvuX9gksmrBer3s5Zpjlfni7oBzfGqoMROvvT9oEG6tniBatKMIiujx11Mr5T9dwnTzOZh5WZpxw18xH9sAZQ8MQ2VdBPKPea0w3rgBYEfNfNrHbGVvmTuDCcnnnxJeOxHbwH7aaOAvMiZkBFON71L+kt/4fiyuxcUDRbeRepL+qvgi8NIJ2gzQNdKknLyIKZzhrJOWDBbzAaX/YktcHfFj8UegwXdG3I4c5WW8qXSXanxNFaSSSYN3PREsyGjr34Ajajv2VH7o2yPnZe4UQIDAQAB",
+  "permissions": ["storage", "alarms", "identity"],
   "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],
   "background": {
     "service_worker": "background.js"

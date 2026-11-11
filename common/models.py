@@ -200,7 +200,17 @@ class FramePick(BaseModel):
 
 class Section(BaseModel):
     heading: str = Field(min_length=1)
+    # Where the topic starts in the video: the heading links to it, and PUBLISH places each
+    # frame after the section whose range [start_sec, next start_sec) contains it (§8.4).
+    start_sec: int = Field(ge=0)
     bullets: list[str]
+
+
+class Question(BaseModel):
+    """A self-test question answered from the video; a Notion toggle at the end of the page."""
+
+    question: str = Field(min_length=1)
+    answer: str = Field(min_length=1)
 
 
 class Synthesis(BaseModel):
@@ -209,6 +219,7 @@ class Synthesis(BaseModel):
     title: str
     summary: str
     sections: list[Section]
+    questions: list[Question]
     frames: list[FramePick]
 
 

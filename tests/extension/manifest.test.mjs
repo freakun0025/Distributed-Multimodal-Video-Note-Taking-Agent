@@ -1,6 +1,7 @@
 // The unpacked extension loads with no build step (F-22): every file the manifest and pages
 // reference exists, MV3 rules hold, and the host permissions cover the default gateway.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { test } from "node:test";
 
@@ -9,10 +10,19 @@ import { ROOT, loadExtensionScripts, readRepoFile } from "./helpers.mjs";
 const manifest = JSON.parse(readRepoFile("extension/manifest.json"));
 const exists = (file) => existsSync(`${ROOT}extension/${file}`);
 
-test("it is a Manifest V3 extension with the least permissions it needs today", () => {
+test("it is a Manifest V3 extension with the least permissions it needs", () => {
   assert.equal(manifest.manifest_version, 3);
-  // identity is added with the Notion OAuth flow (ROADMAP M2).
-  assert.deepEqual(manifest.permissions, ["storage", "alarms"]);
+  // identity: chrome.identity.launchWebAuthFlow for the Notion OAuth flow (F-7).
+  assert.deepEqual(manifest.permissions, ["storage", "alarms", "identity"]);
+});
+
+test("the manifest key pins the extension ID that the Notion redirect URI names", () => {
+  // Chrome's ID: SHA-256 of the DER public key, first 32 hex digits mapped 0-f -> a-p.
+  const der = Buffer.from(manifest.key, "base64");
+  const hex = createHash("sha256").update(der).digest("hex").slice(0, 32);
+  const id = [...hex].map((c) => String.fromCharCode(97 + parseInt(c, 16))).join("");
+  const redirect = readRepoFile(".env.example").match(/^NOTION_REDIRECT_URI=(.*)$/m)[1];
+  assert.equal(redirect, `https://${id}.chromiumapp.org/notion`);
 });
 
 test("every file the manifest names exists", () => {

@@ -5,9 +5,9 @@ from typing import Any
 
 import pytest
 
-from common.models import FramePick, Section, Synthesis, VideoMeta
+from common.models import FramePick, Question, Section, Synthesis, VideoMeta
 from worker.llm.base import PromptImage
-from worker.llm.budget import FrameSlot, NotesFloor
+from worker.llm.budget import FrameSlot, NotesFloor, QuestionBudget
 from worker.llm.chunking import Chunk
 from worker.llm.prompts import CandidateImage, synthesis_request, synthesis_schema
 from worker.llm.synthesis import (
@@ -20,13 +20,15 @@ from worker.llm.synthesis import (
 
 CHUNK = Chunk(index=0, start_sec=0, end_sec=300, lines=("[0:00] hello",))
 FRAME = {"t_sec": 61, "caption": "A diagram of Raft.", "reason": "Shows leader election."}
+QUESTION = {"question": "Why does Raft elect a leader?", "answer": "So one node orders writes."}
 
 
 def _answer(**overrides: Any) -> str:
     data = {
         "title": "Raft",
         "summary": "Consensus.",
-        "sections": [{"heading": "Leaders", "bullets": ["one leader per term"]}],
+        "sections": [{"heading": "Leaders", "start": "0:00", "bullets": ["one leader per term"]}],
+        "questions": [QUESTION],
         "frames": [FRAME],
     }
     data.update(overrides)
@@ -36,7 +38,41 @@ def _answer(**overrides: Any) -> str:
 def test_a_valid_answer_parses() -> None:
     part = parse_part(_answer(), CHUNK, duration_sec=600, dropped=Dropped())
     assert part.frames == [FramePick.model_validate(FRAME)]
-    assert part.sections == [Section(heading="Leaders", bullets=["one leader per term"])]
+    assert part.sections == [
+        Section(heading="Leaders", start_sec=0, bullets=["one leader per term"])
+    ]
+    assert part.questions == [Question.model_validate(QUESTION)]
+
+
+def test_section_starts_are_kept_inside_the_part_and_in_order() -> None:
+    chunk = Chunk(index=1, start_sec=300, end_sec=600, lines=("[5:00] hello",))
+    sections = [
+        {"heading": h, "start": t, "bullets": ["b"]}
+        for h, t in (("A", "4:10"), ("B", "[7:00]"), ("C", "6:40"), ("D", "15:00"))
+    ]
+    part = parse_part(_answer(sections=sections), chunk, duration_sec=500, dropped=Dropped())
+    # 4:10 is before the part, 6:40 before the section above it, 15:00 after the video's end.
+    assert [s.start_sec for s in part.sections] == [300, 420, 420, 499]
+
+
+def test_section_starts_are_copied_times_and_need_no_arithmetic_from_the_model() -> None:
+    # D38: asked for seconds, Flash-Lite turned [9:41] into 941; now it copies "9:41".
+    chunk = Chunk(index=0, start_sec=0, end_sec=4000, lines=("[0:00] hi",))
+    sections = [
+        {"heading": h, "start": t, "bullets": ["b"]}
+        for h, t in (("A", "0:00"), ("B", "9:41"), ("C", "941"), ("D", None), ("E", "1:02:03"))
+    ]
+    dropped = Dropped()
+    part = parse_part(_answer(sections=sections), chunk, duration_sec=4000, dropped=dropped)
+    # A bare number or no start at all: the previous section's start, reported, no repair.
+    assert [s.start_sec for s in part.sections] == [0, 581, 581, 581, 3723]
+    assert dropped.starts == ["941", None]
+
+
+def test_blank_questions_are_left_out_without_a_repair() -> None:
+    questions = [QUESTION, {"question": " ", "answer": "x"}, {"question": "Why?", "answer": ""}]
+    part = parse_part(_answer(questions=questions), CHUNK, duration_sec=600, dropped=Dropped())
+    assert part.questions == [Question.model_validate(QUESTION)]
 
 
 @pytest.mark.parametrize(
@@ -45,7 +81,8 @@ def test_a_valid_answer_parses() -> None:
         ('{"title": "Raft", ', "not valid JSON"),
         ("[1, 2]", "not a JSON object"),
         (json.dumps({"title": "x", "summary": "y", "frames": []}), "sections"),
-        (_answer(sections=[{"heading": "", "bullets": []}]), "heading"),
+        (_answer(sections=[{"heading": "", "start": "0:00", "bullets": []}]), "heading"),
+        (_answer(questions=None), "questions"),
     ],
 )
 def test_unusable_answers_raise_with_a_problem_for_the_repair_prompt(
@@ -85,11 +122,16 @@ def test_finalize_orders_spaces_and_caps_frames_and_drops_empty_sections() -> No
     synthesis = Synthesis(
         title="t",
         summary="s",
-        sections=[Section(heading="Empty", bullets=[]), Section(heading="Kept", bullets=["b"])],
+        sections=[
+            Section(heading="Empty", start_sec=0, bullets=[]),
+            Section(heading="Kept", start_sec=0, bullets=["b"]),
+        ],
+        questions=[Question(question=f"Q{i}?", answer="A.") for i in range(10)],
         frames=[FramePick(t_sec=t, caption="c", reason="r") for t in (100, 5, 12, 40, 70, 300)],
     )
     dropped = Dropped()
-    final = finalize(synthesis, min_gap_s=10, max_frames=3, dropped=dropped)
+    final = finalize(synthesis, min_gap_s=10, max_frames=3, max_questions=8, dropped=dropped)
+    assert [q.question for q in final.questions] == [f"Q{i}?" for i in range(8)]
     assert [f.t_sec for f in final.frames] == [5, 40, 70]
     assert [reason for _, reason in dropped.frames] == [
         "within 10s of 5s",
@@ -115,6 +157,19 @@ def test_schema_enforces_the_notes_floor_on_sections_and_their_bullets() -> None
     assert sections["minItems"] == 6
     assert sections["items"]["properties"]["bullets"]["minItems"] == 5
     assert "maxItems" not in sections  # a floor, never a ceiling on depth
+
+
+def test_schema_bounds_the_questions_and_asks_for_section_starts_as_text() -> None:
+    schema = synthesis_schema(2, 4, questions=QuestionBudget(least=5, most=8))
+    questions = schema["properties"]["questions"]
+    assert (questions["minItems"], questions["maxItems"]) == (5, 8)
+    assert set(questions["items"]["required"]) == {"question", "answer"}
+    section = schema["properties"]["sections"]["items"]
+    assert list(section["properties"]) == ["heading", "start", "bullets"]
+    assert section["properties"]["start"]["type"] == "string"
+    assert set(section["required"]) == {"heading", "start", "bullets"}
+    order = list(schema["properties"])  # Gemini writes the properties in schema order
+    assert order.index("sections") < order.index("questions") < order.index("frames")
 
 
 def test_the_prompt_asks_for_revision_depth_with_a_short_recap() -> None:
@@ -155,8 +210,46 @@ def test_the_prompt_asks_for_complete_notes_without_padding() -> None:
     assert "the final topics get as much detail as the first ones" in system
     assert 'Start a definition with the term and a colon ("Photosynthesis: ...")' in system
     assert "common mistakes the speaker gives" in system  # never an invented pitfall
-    for tag in ("role", "completeness", "content", "format", "frames", "output"):
+    for tag in ("role", "completeness", "content", "format", "questions", "frames", "output"):
         assert system.count(f"<{tag}>") == system.count(f"</{tag}>") == 1
+
+
+def test_the_prompt_keeps_caveats_and_adds_no_examples_or_detail_of_its_own() -> None:
+    # D38, from the Claude Code tutorial: "Claude 3.5 Sonnet" where the video named no model,
+    # a survey the speaker called "not a super rigorous study" turned into "an empirical
+    # analysis", and "event listeners and CSS" where he said only "change the code".
+    meta = VideoMeta(video_id="v", title="Apps", duration_sec=600)
+    chunk = Chunk(index=0, start_sec=0, end_sec=600, lines=("[0:00] hi",), starts=(0.0,))
+    system = synthesis_request(
+        meta, chunk, 1, language="English", min_frames=3, max_frames=8
+    ).system
+    assert "the limits the speaker puts on a claim (only a survey, a small sample" in system
+    assert "kept in the same bullet as the claim itself" in system
+    assert "though the speaker notes it was only Z" in system
+    assert 'never add your own, not even after "such as" or "for example"' in system
+    assert "it cannot go out of date (never a product version" in system
+    assert "at the level of detail the video gives" in system
+
+
+def test_the_prompt_asks_for_section_starts_and_self_test_questions() -> None:
+    meta = VideoMeta(video_id="v", title="Apps", duration_sec=1200)
+    chunk = Chunk(index=1, start_sec=590, end_sec=1200, lines=("[9:50] so",), starts=(590.0,))
+    request = synthesis_request(
+        meta,
+        chunk,
+        2,
+        language="English",
+        min_frames=3,
+        max_frames=8,
+        questions=QuestionBudget(least=3, most=4),
+    )
+    assert "start of a section: the [minutes:seconds] time of the transcript line" in (
+        request.system
+    )
+    assert '(for example "9:47"); between 9:50 and 20:00' in request.system
+    assert "questions: 3 to 4 self-test questions" in request.system
+    assert "Never ask anything the video does not answer" in request.system
+    assert request.schema["properties"]["questions"]["minItems"] == 3
 
 
 def test_the_prompt_fits_any_subject_and_asks_for_specifics_only_where_present() -> None:
@@ -198,14 +291,15 @@ def test_the_request_states_language_frame_budget_and_time_window() -> None:
     # context), so the prompt ends with it.
     assert request.prompt.endswith(
         "Based on the transcript above, write the study notes for part 2 of 2 (9:50 to 20:00), "
-        "following the rules: every teaching point, in the video's order, in full detail."
+        "following the rules: every teaching point, in the video's order, in full detail, "
+        "then the self-test questions."
     )
 
     repair = synthesis_request(
         meta, chunk, 2, language="Hindi", min_frames=2, max_frames=4, problem="bad JSON"
     )
     assert "could not be used (bad JSON)" in repair.prompt
-    assert repair.prompt.index("in full detail.") < repair.prompt.index("could not be used")
+    assert repair.prompt.index("questions.") < repair.prompt.index("could not be used")
 
 
 def test_picks_snap_to_the_candidate_frames_shown_or_are_dropped() -> None:
@@ -213,6 +307,7 @@ def test_picks_snap_to_the_candidate_frames_shown_or_are_dropped() -> None:
         title="t",
         summary="s",
         sections=[],
+        questions=[],
         frames=[FramePick(t_sec=t, caption="c", reason="r") for t in (45, 106, 107, 200)],
     )
     dropped = Dropped()
@@ -248,6 +343,8 @@ def test_candidate_frames_sit_in_the_transcript_at_their_time() -> None:
     assert "empty, greyed out or still being built" in request.system
     assert "never what is said around it" in request.system
     assert "a frame of only the speaker" in request.system  # last resort, like a title card
+    # D38: "Sonnet 5" on screen came back as "Sonnet 3.5": copy exactly or leave it out.
+    assert "leave out any you cannot read with certainty" in request.system
 
 
 def test_without_candidates_the_prompt_is_text_only() -> None:
@@ -256,7 +353,7 @@ def test_without_candidates_the_prompt_is_text_only() -> None:
     request = synthesis_request(meta, chunk, 1, language="English", min_frames=3, max_frames=8)
     assert len(request.parts) == 1 and request.images == ()
     assert "only have the transcript" in request.system
-    assert request.prompt.endswith("in full detail.")
+    assert request.prompt.endswith("in full detail, then the self-test questions.")
     assert "Based on the transcript above" in request.prompt
 
 

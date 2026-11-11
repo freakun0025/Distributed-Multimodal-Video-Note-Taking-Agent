@@ -9,7 +9,7 @@ from typing import Any
 
 from common.models import Synthesis, VideoMeta
 from worker.llm.base import LlmRequest, PromptImage, PromptPart
-from worker.llm.budget import NO_FLOOR, FrameSlot, NotesFloor
+from worker.llm.budget import NO_FLOOR, ONE_QUESTION, FrameSlot, NotesFloor, QuestionBudget
 from worker.llm.chunking import Chunk, clock
 
 # Study notes for any subject (CP7c, D35; detail pass D37). A student learns and revises from
@@ -20,6 +20,9 @@ from worker.llm.chunking import Chunk, clock
 # contains it. The concrete patterns stay: without one, Flash-Lite left out the compared values.
 # One delimiter style (tags), as the guide recommends; the task is restated after the
 # transcript (TASK), because the guide puts instructions after long context.
+# D38 (the Claude Code tutorial check): the speaker's caveats kept, no examples or versions of
+# the model's own ("Claude 3.5 Sonnet" where the video named none), detail only at the level
+# the video gives; section start times and self-test questions for the Notion page.
 SYSTEM = """\
 <role>
 You write study notes from one part of a video lecture or tutorial. A student will learn and \
@@ -42,6 +45,9 @@ on it.
 no commentary of your own on what something shows, underscores or highlights unless the speaker \
 makes that point. When a topic has few points, split them into finer, more specific bullets \
 (each step, example, number or reason on its own) instead.
+- The detail comes from the video, never from your own knowledge: describe each step, tool and \
+process at the level of detail the video gives, and add no sub-steps, tools, technical terms or \
+causes it does not mention.
 </completeness>
 
 <content>
@@ -49,6 +55,9 @@ makes that point. When a topic has few points, split them into finer, more speci
   - each key concept and new term: what it means, in plain words (the speaker's own definition \
 where one is given);
   - how and why: the mechanism, the reasoning, causes and effects, and the evidence given;
+  - the limits the speaker puts on a claim (only a survey, a small sample, an estimate, a rough \
+rule, disputed, true only in some cases), kept in the same bullet as the claim itself: "X \
+found Y, though the speaker notes it was only Z";
   - the speaker's examples, analogies and demonstrations, and what each one shows;
   - the comparisons, trade-offs, rules of thumb, exceptions, pitfalls and common mistakes the \
 speaker gives;
@@ -66,10 +75,13 @@ with names, commands and code written exactly as given;
 "In 1869 the Suez Canal opened, so ships from Europe could reach India without sailing around \
 Africa").
   Leave out a kind of detail the part does not have; never make one up.
-- The video is the source: cover what it says and shows, and never contradict it. Where a short \
-piece of standard background makes a point clearer or easier to place (a full name, date, unit, \
-place or standard term the speaker leaves out), you may add it, but only if you are certain it \
-is correct. Add no topics the video does not cover.
+- The video is the source: cover what it says and shows, and never contradict it. Every \
+example, name, product, version and figure in the notes is one the video gives; never add your \
+own, not even after "such as" or "for example". Where a short piece of standard background makes \
+a point clearer or easier to place (a full name, date, unit, place or standard term the speaker \
+leaves out), you may add it, but only if you are certain it is correct and it cannot go out of \
+date (never a product version, price, ranking or current record). Add no topics the video does \
+not cover.
 - Leave out sponsor messages, channel promotion and requests to like, subscribe, buy or donate.
 </content>
 
@@ -78,6 +90,9 @@ is correct. Add no topics the video does not cover.
 - summary: 2-4 sentences, a quick recap of what this part teaches and concludes.
 - sections: in the video's order, one per topic; at least {min_sections}, more if the part \
 covers more topics. Each heading names its topic plainly, so a student can find it when revising.
+- start of a section: the [minutes:seconds] time of the transcript line where its topic begins, \
+copied exactly as the transcript shows it (for example "9:47"); between {part_start} and \
+{part_end}, and never before the start of the section above it.
 - bullets: at least {min_bullets} in each section, and as many more as the topic needs to hold \
 all of its points; a dense topic often needs 8 to 12.
 - Each bullet is one point in one or two full sentences that make sense on their own: name the \
@@ -89,6 +104,16 @@ explains" or "the speaker discusses".
 supply stays the same, buyers compete for the limited goods, so the price rises until the amount \
 people want to buy matches the amount on offer again."
 </format>
+
+<questions>
+- questions: {min_questions} to {max_questions} self-test questions on the most important points \
+of this part, in the video's order, so a student can test themselves while revising.
+- Ask about what the video teaches: a definition, a reason or mechanism, the steps of a \
+procedure, a comparison, a result, or a worked example to redo. Prefer "why" and "how" \
+questions to yes/no questions or trivia about asides.
+- answer: one to three sentences that answer the question fully from the video, with its \
+numbers, names and steps. Never ask anything the video does not answer.
+</questions>
 
 <frames>
 {frames_rule}
@@ -122,7 +147,8 @@ CANDIDATE_FRAMES_RULE = """\
 - Frames from the video appear inside the transcript at their time, each labelled "Candidate \
 frame t_sec=N". Read them, and put what they show into the notes (slide text, labels, \
 numbers, equations, code, diagrams, charts, maps, timelines), including what is shown but never \
-said aloud.
+said aloud. Copy names, version numbers and figures exactly as they appear; leave out any you \
+cannot read with certainty rather than guess.
 - Pick between {min_frames} and {max_frames} of these candidates as the pictures for the notes, \
 by their exact t_sec:
   - spread them over the whole part, from its first minutes to its last: at least one for every \
@@ -148,7 +174,8 @@ Transcript ([minutes:seconds] text):
 TASK = """
 
 Based on the {material} above, write the study notes for part {number} of {total} ({start} to \
-{end}), following the rules: every teaching point, in the video's order, in full detail."""
+{end}), following the rules: every teaching point, in the video's order, in full detail, then \
+the self-test questions."""
 
 REPAIR = """
 
@@ -173,6 +200,7 @@ def synthesis_request(
     min_frames: int,
     max_frames: int,
     floor: NotesFloor = NO_FLOOR,
+    questions: QuestionBudget = ONE_QUESTION,
     slots: Sequence[FrameSlot] = (),
     candidates: Sequence[CandidateImage] = (),
     problem: str | None = None,
@@ -199,6 +227,8 @@ def synthesis_request(
             language=language,
             min_sections=floor.sections,
             min_bullets=floor.bullets,
+            min_questions=questions.least,
+            max_questions=max(questions.most, questions.least),
             frames_rule=rule.format(
                 min_frames=min_frames,
                 max_frames=max_frames,
@@ -206,9 +236,11 @@ def synthesis_request(
             ).replace("\n\n", "\n"),  # no blank line where the order rule is left out
             start_sec=chunk.start_sec,
             end_sec=chunk.end_sec,
+            part_start=where["start"],
+            part_end=where["end"],
         ),
         parts=tuple(parts),
-        schema=synthesis_schema(min_frames, max_frames, floor, slots),
+        schema=synthesis_schema(min_frames, max_frames, floor, slots, questions=questions),
     )
 
 
@@ -242,12 +274,19 @@ def synthesis_schema(
     max_frames: int,
     floor: NotesFloor = NO_FLOOR,
     slots: Sequence[FrameSlot] = (),
+    *,
+    questions: QuestionBudget = ONE_QUESTION,
 ) -> dict[str, Any]:
     """`Synthesis` as a self-contained JSON Schema. Gemini enforces array bounds
     (minItems/maxItems), `prefixItems`, `enum` and integer `minimum`/`maximum` while decoding,
     unlike string-length keywords, which it ignores. So for any model: the frame budget, the
-    notes floor (sections, bullets in each section) and, with slots, one frame per stretch of
-    the part (frame i from slot i; with candidates, exactly one of them)."""
+    notes floor (sections, bullets in each section), the number of self-test questions and,
+    with slots, one frame per stretch of the part (frame i from slot i; with candidates, exactly
+    one of them).
+
+    One difference from `Synthesis`: a section's `start_sec` is asked for as `start`, the
+    transcript's own "m:ss" text (parse_part converts it). Flash-Lite turned [9:41] into 941
+    seconds when asked for seconds (D38); copying the time needs no arithmetic."""
     schema = _inline_refs(Synthesis.model_json_schema())
     properties = schema["properties"]
     frames = properties["frames"]
@@ -260,8 +299,19 @@ def synthesis_schema(
         ]
         every = tuple(sorted({t for slot in slots for t in slot.choices}))
         frames["items"] = _frame_at(item, every, slots[0].first, slots[-1].last)
-    properties["sections"]["minItems"] = floor.sections
-    properties["sections"]["items"]["properties"]["bullets"]["minItems"] = floor.bullets
+    sections = properties["sections"]
+    sections["minItems"] = floor.sections
+    section = sections["items"]
+    section["properties"] = {  # same order, so Gemini still writes heading, start, bullets
+        ("start" if name == "start_sec" else name): (
+            {"type": "string", "title": "Start"} if name == "start_sec" else value
+        )
+        for name, value in section["properties"].items()
+    }
+    section["required"] = ["start" if name == "start_sec" else name for name in section["required"]]
+    section["properties"]["bullets"]["minItems"] = floor.bullets
+    properties["questions"]["minItems"] = questions.least
+    properties["questions"]["maxItems"] = max(questions.most, questions.least)
     return schema
 
 

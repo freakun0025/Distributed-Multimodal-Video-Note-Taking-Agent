@@ -134,7 +134,7 @@ async def generate_content(
     properties = schema.get("properties", {})
     sections = properties.get("sections", {})
     frames = properties.get("frames", {})
-    # Like Gemini, honour the schema: frame budget, notes floor, one frame per slot.
+    # Like Gemini, honour the schema: frame budget, notes floor, questions, one frame per slot.
     notes = notes_from_transcript(
         prompt,
         frames.get("maxItems", _DEFAULT_MAX_FRAMES),
@@ -143,6 +143,7 @@ async def generate_content(
         .get("properties", {})
         .get("bullets", {})
         .get("minItems", 1),
+        min_questions=properties.get("questions", {}).get("minItems", 1),
         slot_times=[_slot_time(item) for item in frames.get("prefixItems", [])],
     )
     return {
@@ -161,6 +162,11 @@ async def generate_content(
     }
 
 
+def _clock(seconds: int) -> str:
+    """The transcript's "m:ss", which the real model copies for a section's start."""
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
 def _slot_time(item: dict[str, Any]) -> int:
     """A frame slot's middle allowed time: its candidate list, or its range of seconds."""
     t_sec = item.get("properties", {}).get("t_sec", {})
@@ -175,11 +181,13 @@ def notes_from_transcript(
     *,
     min_sections: int = 1,
     min_bullets: int = 1,
+    min_questions: int = 1,
     slot_times: list[int] | None = None,
 ) -> dict[str, Any]:
     """Deterministic notes: the transcript lines split into at least two sections (or
-    `min_sections`), each with at least `min_bullets` bullets; one frame per slot when the
-    schema has slots, else evenly spaced frames."""
+    `min_sections`), each starting at its first line's time with at least `min_bullets` bullets;
+    `min_questions` self-test questions; one frame per slot when the schema has slots, else
+    evenly spaced frames."""
     lines = [
         (int(h or 0) * 3600 + int(m) * 60 + int(s), text.strip())
         for h, m, s, text in _LINE.findall(prompt)
@@ -192,6 +200,7 @@ def notes_from_transcript(
     sections = [
         {
             "heading": f"Part {i + 1}",
+            "start": _clock(group[0][0] if group else (lines[-1][0] if lines else 0)),
             "bullets": [text for _, text in group[: max(3, min_bullets)]]
             + [f"Fake point {n + 1}." for n in range(len(group), min_bullets)],
         }
@@ -208,6 +217,10 @@ def notes_from_transcript(
         "title": "Fake lecture notes",
         "summary": f"Fake summary of {len(lines)} transcript lines.",
         "sections": sections,
+        "questions": [
+            {"question": f"What is fake point {n + 1}?", "answer": f"Fake answer {n + 1}."}
+            for n in range(min_questions)
+        ],
         "frames": [
             {
                 "t_sec": t,

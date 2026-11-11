@@ -61,6 +61,7 @@ def _context(
         title="t",
         summary="s",
         sections=[],
+        questions=[],
         frames=[FramePick(t_sec=t, caption=f"c{t}", reason="r") for t in picks],
     )
     ctx.job_dir.mkdir(parents=True)
