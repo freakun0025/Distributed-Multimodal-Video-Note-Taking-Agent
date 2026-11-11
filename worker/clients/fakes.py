@@ -1,7 +1,8 @@
 """Clients for the fakes service, used when FAKE_APIS=true (ARCHITECTURE §14, D29).
 
-Same interface and error classification as the real clients, so injected 429s and 5xx (M3)
-take the same retry path; every call still takes a limiter token first.
+Same interface and error classification as the real clients, so the fakes' failure switches
+(429s, 5xx, a private video; CP9) take the same retry path; every call still takes a limiter
+token first.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ class FakesYouTubeClient:
     """FAKE_APIS=true: the same two calls against the fakes service (ARCHITECTURE §14).
 
     Real HTTP status codes from the fake go through classify_http, so injected 429s and 5xx
-    (M3) take the same retry path as YouTube's.
+    take the same retry path as YouTube's, and a private video's 403 is VIDEO_UNAVAILABLE (D12).
     """
 
     def __init__(
@@ -76,9 +77,15 @@ class FakesYouTubeClient:
         part = dest_dir / f"{name}.mp4.{uuid.uuid4().hex}.part"
         url = f"{self._base_url}/youtube/videos/{video_id}/video"
         try:
-            async with self._http() as http, http.stream("GET", url) as response:
+            async with (
+                self._http() as http,
+                http.stream("GET", url, params={"height": max_height}) as response,
+            ):
                 if response.status_code >= 400:
-                    raise classify_http(API, response.status_code, response.headers)
+                    await response.aread()
+                    raise classify_http(
+                        API, response.status_code, response.headers, detail=_detail(response)
+                    )
                 total = int(response.headers.get("content-length") or 0)
                 done_bytes, reported = 0, 0.0
                 with part.open("wb") as handle:
@@ -115,6 +122,18 @@ class FakesYouTubeClient:
         if missing_ok and response.status_code == 404:
             return None
         if response.status_code >= 400:
-            raise classify_http(API, response.status_code, response.headers)
+            raise classify_http(
+                API, response.status_code, response.headers, detail=_detail(response)
+            )
         data: dict[str, Any] = response.json()
         return data
+
+
+def _detail(response: httpx.Response) -> str | None:
+    """The fake's error message, like yt-dlp's ("Private video. Sign in ...")."""
+    try:
+        error = response.json().get("error")
+    except (ValueError, AttributeError):
+        return None
+    message = error.get("message") if isinstance(error, dict) else None
+    return str(message) if message else None

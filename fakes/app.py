@@ -1,9 +1,13 @@
-"""Fake YouTube/LLM/Notion with switchable 429/5xx/timeouts/frame faults (ARCHITECTURE §14, O-1).
+"""Fake YouTube/LLM/Notion with switchable failures (ARCHITECTURE §14, O-1).
 
-M2 (pulled forward, D29): the happy path `make itest` needs, so integration tests never spend
-real YouTube or Gemini quota — YouTube metadata, captions and a video file for any video id,
-and a Gemini-compatible `generateContent` that writes notes from the transcript it is sent. M3
-adds the failure switches and Notion.
+The happy path (D29) lets integration tests and demos run without spending real YouTube, Gemini
+or Notion quota: metadata, captions and a video file for any video id, a Gemini-compatible
+`generateContent` that writes notes from the transcript it is sent, and a Notion workspace.
+
+The `/_control/*` switches reproduce every Spec §6 failure on demand (CP9): the next N calls to
+one API answer an error (429 by default, with the real API's error body, optional Retry-After),
+every video is private, or the frames download is cut short or black. The worker's real clients
+classify these answers exactly as they classify the real APIs' (`make fake-429` etc.).
 """
 
 from __future__ import annotations
@@ -13,12 +17,16 @@ import json
 import math
 import re
 import uuid
-from collections.abc import AsyncIterator
+from collections import deque
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
+from http import HTTPStatus
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
 # Every fake video: a 10-minute lecture with a caption line every 20 s.
 DURATION_S = 600
@@ -28,10 +36,23 @@ _CANDIDATE = re.compile(r"Candidate frame t_sec=(\d+):")
 _DEFAULT_MAX_FRAMES = 3
 # Generated when the image is built (docker/fakes.Dockerfile): 600 s, a new colour every 20 s.
 VIDEO_PATH = Path(__file__).with_name("video.mp4")
+# Frame faults (CP9), also built with the image: the same video cut at CUT_AT_S (picks after it
+# get no frame), and 600 s of black (every grab is blank).
+CUT_AT_S = 300  # `-t 300` in docker/fakes.Dockerfile
+FRAME_FAULT_VIDEOS = {
+    "partial": Path(__file__).with_name("video_half.mp4"),
+    "none": Path(__file__).with_name("video_black.mp4"),
+}
+# Frame faults hit only downloads taller than this: EXTRACT_FRAMES' (FRAMES_VIDEO_HEIGHT, 720),
+# not SUMMARIZE's candidate preview (CANDIDATES_VIDEO_HEIGHT, 480), so the notes still pick
+# frames over the whole video and the frame stage then fails some or all of them.
+PREVIEW_MAX_HEIGHT = 480
 # Served over about this long, like a real download, so EXTRACT_FRAMES has an observable
 # window (the kill-a-worker test waits for it).
 VIDEO_STREAM_SECONDS = 4.0
 _VIDEO_CHUNK = 256 * 1024
+# yt-dlp's message for a private video (the real client classifies it VIDEO_UNAVAILABLE, D12).
+PRIVATE_VIDEO = "Private video. Sign in if you've been granted access to this video"
 
 app = FastAPI(title="vna fakes", docs_url=None, redoc_url=None)
 
@@ -41,13 +62,184 @@ async def healthz() -> dict[str, str]:
     return {"fakes": "ok"}
 
 
-# --- Switches for integration tests (M3 adds 429s, timeouts and frame faults) --------------------
+# --- Failure switches (Spec §6 on demand; make fake-429 / fake-frames / fake-unavailable) ------
+
+Api = Literal["youtube", "llm", "notion"]
+FrameMode = Literal["ok", "partial", "none"]
+_CALL_LOG_MAX = 2000
 
 # Models that answer 503 "high demand", as Gemini does under load (model chain test, D36).
 _unavailable_models: set[str] = set()
 # Every generateContent call since the last switch: model and HTTP status, oldest first.
 _llm_calls: list[dict[str, Any]] = []
 HIGH_DEMAND = "This model is currently experiencing high demand. Please try again later."
+
+
+class FaultSwitch(BaseModel):
+    """The next `count` calls to `api` answer `status` instead of working."""
+
+    api: Api
+    status: int = Field(default=429, ge=400, le=599)
+    count: int = Field(default=1, ge=1, le=1000)
+    retry_after: int | None = Field(default=None, ge=0, le=3600)  # seconds
+
+
+class YouTubeSwitch(BaseModel):
+    """Omitted fields keep their current value."""
+
+    unavailable: bool | None = None  # every video private: TRANSCRIBE retries, then the DLQ
+    frames: FrameMode | None = None  # the frames download: intact, cut at 300 s, or black
+    duration: int | None = Field(default=None, gt=0)  # seconds in the metadata (Constraint A)
+
+
+@dataclass
+class _Fault:
+    status: int
+    remaining: int
+    retry_after: int | None
+
+
+_faults: dict[str, _Fault] = {}
+_YOUTUBE_DEFAULTS: dict[str, Any] = {"unavailable": False, "frames": "ok", "duration": DURATION_S}
+_youtube: dict[str, Any] = dict(_YOUTUBE_DEFAULTS)
+# Every YouTube/LLM/Notion call, oldest first: api, method, path and the status answered.
+_calls: deque[dict[str, Any]] = deque(maxlen=_CALL_LOG_MAX)
+
+
+def _api_of(path: str) -> Api | None:
+    """Which fake API a request is for; the OAuth exchange (gateway, not the pipeline) is none."""
+    if path.startswith("/youtube/"):
+        return "youtube"
+    if path.startswith("/llm/"):
+        return "llm"
+    if path.startswith("/notion/") and not path.startswith("/notion/v1/oauth/"):
+        return "notion"
+    return None
+
+
+@app.middleware("http")
+async def inject_faults(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    api = _api_of(request.url.path)
+    if api is None:
+        return await call_next(request)
+    fault = _faults.get(api)
+    if fault is not None and fault.remaining > 0:
+        fault.remaining -= 1
+        response: Response = _fault_response(api, fault.status, fault.retry_after)
+    else:
+        response = await call_next(request)
+    _calls.append(
+        {
+            "api": api,
+            "method": request.method,
+            "path": request.url.path,
+            "status": response.status_code,
+        }
+    )
+    return response
+
+
+def _fault_response(api: Api, status: int, retry_after: int | None) -> JSONResponse:
+    """The error each real API sends, so the worker's clients take their real code paths."""
+    try:
+        phrase = HTTPStatus(status).phrase
+    except ValueError:
+        phrase = "Error"
+    headers = {"retry-after": str(retry_after)} if retry_after is not None else {}
+    if api == "llm":
+        return JSONResponse(status_code=status, content=_gemini_error(status, phrase, retry_after))
+    if api == "notion":
+        code, message = _NOTION_ERRORS.get(status, ("internal_server_error", phrase))
+        body = {"object": "error", "status": status, "code": code, "message": message}
+        return JSONResponse(status_code=status, content=body, headers=headers)
+    return JSONResponse(
+        status_code=status, content={"error": {"code": status, "message": phrase}}, headers=headers
+    )
+
+
+_NOTION_ERRORS = {
+    429: ("rate_limited", "You have been rate limited. Please try again in a few minutes."),
+    502: ("bad_gateway", "Notion encountered an issue while attempting to complete this request."),
+    503: ("service_unavailable", "Notion is unavailable, please try again later."),
+    504: ("gateway_timeout", "Notion timed out while attempting to complete this request."),
+}
+_GOOGLE_STATUS = {
+    429: "RESOURCE_EXHAUSTED",
+    500: "INTERNAL",
+    503: "UNAVAILABLE",
+    504: "DEADLINE_EXCEEDED",
+}
+
+
+def _gemini_error(status: int, phrase: str, retry_after: int | None) -> dict[str, Any]:
+    """Gemini's error body. A 429 is the per-minute quota (retried after a delay); a per-day
+    quota 429 would bench the model instead (D36) and is not what this switch is for."""
+    error: dict[str, Any] = {
+        "code": status,
+        "message": HIGH_DEMAND if status == 503 else phrase,
+        "status": _GOOGLE_STATUS.get(status, "UNKNOWN"),
+    }
+    if status == 429:
+        error["message"] = "You exceeded your current quota. Please check your plan and billing."
+        quota = {
+            "quotaMetric": "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+            "quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier",
+        }
+        error["details"] = [
+            {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [quota]}
+        ]
+        if retry_after is not None:
+            retry = {"@type": "type.googleapis.com/google.rpc.RetryInfo"}
+            error["details"].append({**retry, "retryDelay": f"{retry_after}s"})
+    return {"error": error}
+
+
+def _switches() -> dict[str, Any]:
+    return {
+        "faults": {
+            api: {"status": f.status, "remaining": f.remaining, "retry_after": f.retry_after}
+            for api, f in _faults.items()
+            if f.remaining > 0
+        },
+        "youtube": dict(_youtube),
+        "llm_unavailable": sorted(_unavailable_models),
+    }
+
+
+@app.put("/_control/faults")
+async def control_faults(switch: FaultSwitch) -> dict[str, Any]:
+    """Replace `api`'s pending error answers with `count` answers of `status`."""
+    _faults[switch.api] = _Fault(switch.status, switch.count, switch.retry_after)
+    return _switches()
+
+
+@app.put("/_control/youtube")
+async def control_youtube(switch: YouTubeSwitch) -> dict[str, Any]:
+    _youtube.update(switch.model_dump(exclude_none=True))
+    return _switches()
+
+
+@app.get("/_control/switches")
+async def switches() -> dict[str, Any]:
+    return _switches()
+
+
+@app.post("/_control/reset")
+async def reset() -> dict[str, Any]:
+    """Every API works again and the call log is empty (the Notion workspace is kept)."""
+    _faults.clear()
+    _youtube.update(_YOUTUBE_DEFAULTS)
+    _unavailable_models.clear()
+    _llm_calls.clear()
+    _calls.clear()
+    return _switches()
+
+
+@app.get("/_control/calls")
+async def calls(api: Api | None = None) -> list[dict[str, Any]]:
+    return [call for call in _calls if api is None or call["api"] == api]
 
 
 @app.put("/_control/llm")
@@ -67,21 +259,29 @@ async def llm_calls() -> list[dict[str, Any]]:
 # --- YouTube ------------------------------------------------------------------------------------
 
 
-@app.get("/youtube/videos/{video_id}")
-async def youtube_video(video_id: str) -> dict[str, Any]:
+def _private() -> JSONResponse:
+    return JSONResponse(status_code=403, content={"error": {"code": 403, "message": PRIVATE_VIDEO}})
+
+
+@app.get("/youtube/videos/{video_id}", response_model=None)
+async def youtube_video(video_id: str) -> dict[str, Any] | JSONResponse:
     """The fields of yt-dlp's info dict that TRANSCRIBE reads."""
+    if _youtube["unavailable"]:
+        return _private()
     return {
         "id": video_id,
         "title": f"Fake lecture {video_id}",
-        "duration": DURATION_S,
+        "duration": _youtube["duration"],
         "live_status": "not_live",
         "channel": "Fake channel",
         "language": "en",
     }
 
 
-@app.get("/youtube/videos/{video_id}/captions")
-async def youtube_captions(video_id: str) -> dict[str, Any]:
+@app.get("/youtube/videos/{video_id}/captions", response_model=None)
+async def youtube_captions(video_id: str) -> dict[str, Any] | JSONResponse:
+    if _youtube["unavailable"]:
+        return _private()
     segments = [
         {
             "start": float(start),
@@ -93,16 +293,24 @@ async def youtube_captions(video_id: str) -> dict[str, Any]:
     return {"language": "en", "segments": segments}
 
 
-@app.get("/youtube/videos/{video_id}/video")
-async def youtube_video_file(video_id: str) -> StreamingResponse:
-    """The fake video, streamed in chunks over VIDEO_STREAM_SECONDS."""
-    if not VIDEO_PATH.exists():
-        raise HTTPException(status_code=404, detail="no fake video in this image")
-    size = VIDEO_PATH.stat().st_size
+@app.get("/youtube/videos/{video_id}/video", response_model=None)
+async def youtube_video_file(
+    video_id: str, height: int | None = None
+) -> StreamingResponse | JSONResponse:
+    """The fake video at most `height` pixels tall, streamed in chunks over VIDEO_STREAM_SECONDS.
+    With a frame fault on, a download taller than the preview gets the broken video."""
+    if _youtube["unavailable"]:
+        return _private()
+    path = VIDEO_PATH
+    if _youtube["frames"] != "ok" and (height is None or height > PREVIEW_MAX_HEIGHT):
+        path = FRAME_FAULT_VIDEOS[_youtube["frames"]]
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"no {path.name} in this image")
+    size = path.stat().st_size
     pause = VIDEO_STREAM_SECONDS / max(1, math.ceil(size / _VIDEO_CHUNK))
 
     async def body() -> AsyncIterator[bytes]:
-        with VIDEO_PATH.open("rb") as handle:
+        with path.open("rb") as handle:
             while chunk := handle.read(_VIDEO_CHUNK):
                 yield chunk
                 await asyncio.sleep(pause)

@@ -1,7 +1,8 @@
 """Jobs through the real gateway, broker, Postgres and >= 2 workers. Every stage runs for real
 against the fakes service (FAKE_APIS=true): YouTube, the LLM and Notion (PUBLISH, CP8).
 
-The kill test SIGKILLs a worker container with the docker CLI, so it needs `docker` on PATH.
+The kill test SIGKILLs a worker container with the docker CLI, so it needs `docker` on PATH; it
+uses the same helpers as `make kill-worker` (chaos/kill_worker.py).
 """
 
 import asyncio
@@ -15,8 +16,9 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from chaos.kill_worker import docker, follow, kill, wait_running
 from common.db import job_events, jobs, stage_checkpoints
-from common.state import STAGE_ORDER, TERMINAL_STATUSES
+from common.state import STAGE_ORDER, TERMINAL_STATUSES, JobStatus, Stage
 from tests.integration.conftest import FAKES_URL, VIDEO_URL, JobRows
 
 pytestmark = pytest.mark.integration
@@ -137,33 +139,23 @@ async def test_concurrent_jobs_are_shared_between_workers(
     assert len(workers) >= 2  # Spec §1.1: at least two workers do the work
 
 
-async def _docker(*args: str) -> None:
-    process = await asyncio.create_subprocess_exec("docker", *args)
-    assert await process.wait() == 0, f"docker {' '.join(args)} failed"
-
-
 @pytest.mark.skipif(shutil.which("docker") is None, reason="needs the docker CLI")
 async def test_killing_the_worker_mid_stage_still_completes_the_job_once(
     gateway: httpx.AsyncClient, engine: AsyncEngine, job_rows: JobRows
 ) -> None:
     job_id = await _submit(gateway, job_rows)
 
-    # Wait until a worker has entered EXTRACT_FRAMES, then SIGKILL that worker's container.
-    victim = None
-    deadline = time.monotonic() + JOB_TIMEOUT_S
-    while victim is None and time.monotonic() < deadline:
-        for event in await _events(engine, job_id):
-            if event["kind"] == "TRANSITION" and event["to_status"] == "EXTRACTING_FRAMES":
-                victim = event["detail"]["worker"]  # container hostname = short container id
-        await asyncio.sleep(0.1)
-    assert victim is not None, "job never reached EXTRACTING_FRAMES"
-    await _docker("kill", "--signal", "KILL", victim)
+    # Wait until a worker runs EXTRACT_FRAMES, then SIGKILL that worker's container.
+    running = await wait_running(engine, Stage.EXTRACT_FRAMES, job_id, JOB_TIMEOUT_S)
+    victim = running.worker  # container hostname = short container id
+    killed_at = await kill(engine, victim)
     try:
-        final = await _wait_terminal(gateway, job_id)
+        recovery = await follow(engine, job_id, Stage.EXTRACT_FRAMES, killed_at, JOB_TIMEOUT_S)
     finally:
-        await _docker("start", victim)
+        await docker("start", victim)
 
-    assert final["status"] == "COMPLETED"
+    assert recovery.status is JobStatus.COMPLETED
+    assert recovery.redelivered_to not in (None, victim)
     events = await _events(engine, job_id)
     frames = [e for e in events if e["stage"] == "EXTRACT_FRAMES"]
     redelivered = [e for e in frames if e["kind"] == "REDELIVERED"]

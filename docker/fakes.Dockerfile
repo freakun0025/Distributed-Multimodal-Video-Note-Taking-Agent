@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Fake YouTube/LLM/Notion for failure injection (profile `fakes`; ARCHITECTURE §14, O-1).
-# Happy path since M2 (D29); failure switches arrive in M3. ffmpeg only generates the fake video.
+# Happy path since M2 (D29); failure switches since CP9. ffmpeg only generates the fake videos.
 FROM ghcr.io/astral-sh/uv:0.11.8 AS uv
 
 FROM python:3.12.13-slim-bookworm
@@ -26,6 +26,14 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-dev --no-ins
 RUN mkdir -p fakes && ffmpeg -nostdin -hide_banner -loglevel error \
     -f lavfi -i "testsrc2=size=640x360:rate=2:duration=600,hue=h='floor(t/20)*47'" \
     -c:v libx264 -preset veryfast -crf 30 -pix_fmt yuv420p -g 10 -y fakes/video.mp4
+
+# Frame faults (make fake-frames): the same video cut at 300 s, so picks after it get no frame;
+# and 600 s of black, so every grab is blank.
+RUN ffmpeg -nostdin -hide_banner -loglevel error -i fakes/video.mp4 -t 300 -c copy \
+        -y fakes/video_half.mp4 \
+    && ffmpeg -nostdin -hide_banner -loglevel error \
+        -f lavfi -i "color=c=black:size=640x360:rate=2:duration=600" \
+        -c:v libx264 -preset veryfast -crf 30 -pix_fmt yuv420p -g 10 -y fakes/video_black.mp4
 
 COPY common ./common
 COPY fakes ./fakes
