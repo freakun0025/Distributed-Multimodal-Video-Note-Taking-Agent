@@ -95,6 +95,8 @@ def _context(tmp_path: Path, **settings: Any) -> StageContext:
         json.dumps([m.model_dump(mode="json", exclude_none=True) for m in manifest]), "utf-8"
     )
     (job / "video.mp4").write_bytes(b"video")
+    (job / "preview.mp4").write_bytes(b"preview")  # SUMMARIZE's small copy
+    (job / "video.f137.mp4.part").write_bytes(b"partial")  # a yt-dlp leftover
     return ctx
 
 
@@ -123,7 +125,10 @@ async def test_a_page_is_created_under_the_default_parent_and_filled(tmp_path: P
         "notion_page_url": f"https://notion.test/{page_id}",
         "frames_published": 2,
     }
-    assert not (ctx.job_dir / "video.mp4").exists()
+    # Both downloads go (finished or partial); the job's own files stay.
+    assert sorted(p.name for p in ctx.job_dir.iterdir()) == [
+        "frames", "meta.json", "synthesis.json",
+    ]  # fmt: skip
 
 
 async def test_a_retry_after_a_crash_finds_the_page_and_appends_only_the_rest(

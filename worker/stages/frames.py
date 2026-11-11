@@ -1,9 +1,10 @@
 """EXTRACT_FRAMES stage: download once, ffmpeg seeks, blank check, manifest (ARCHITECTURE §8.3).
 
 Frames only ever come from the source video (C-B). Per pick, FRAME_BURST grabs inside the same
-second (t, t+1/n, ...) and the least blurry is kept as frame_{t:05d}.jpg (D33). A failed or
-blank frame is a warning, never a failure (F-20). Idempotent: the download and every kept frame
-are reused on a re-run.
+second (t, t+1/n, ...) and the least blurry is kept as frame_{t:05d}.jpg (D33). The burst stops
+at a screen change inside that second (D40): the notes' caption describes the picture at t, so
+a grab after the change would show something else. A failed or blank frame is a warning, never
+a failure (F-20). Idempotent: the download and every kept frame are reused on a re-run.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from pathlib import Path
 from common.errors import VnaError, WarningCode
 from common.models import FrameResult, JobWarning, Synthesis
 from worker.artifacts import write_json
+from worker.candidates import Cut, cuts_between
 from worker.clients.youtube import VideoDownloader, video_source
 from worker.context import StageContext, StageOutcome
 from worker.media import FrameGrabError, Grab, grab_frame, sharpest
@@ -26,8 +28,10 @@ VIDEO_NAME = "video"
 FRAMES_DIR = "frames"
 MANIFEST_FILE = "manifest.json"
 DOWNLOAD_SHARE = 0.6  # of this stage's progress bar; frame grabs fill the rest
+BURST_SPAN_S = 1.0  # every grab stays inside second t (D33)
 
 Grabber = Callable[..., Awaitable[Grab]]
+CutFinder = Callable[..., Awaitable[list[Cut]]]
 
 
 async def run(ctx: StageContext) -> StageOutcome:
@@ -35,7 +39,10 @@ async def run(ctx: StageContext) -> StageOutcome:
 
 
 async def extract_frames(
-    ctx: StageContext, source: VideoDownloader, grab: Grabber = grab_frame
+    ctx: StageContext,
+    source: VideoDownloader,
+    grab: Grabber = grab_frame,
+    find_cuts: CutFinder = cuts_between,
 ) -> StageOutcome:
     synthesis = Synthesis.model_validate_json(
         await asyncio.to_thread((ctx.job_dir / SYNTHESIS_FILE).read_text, "utf-8")
@@ -66,7 +73,7 @@ async def extract_frames(
         else:
             results = []
             for done, t_sec in enumerate(picks, start=1):
-                results.append(await _capture(ctx, video, frames_dir, t_sec, grab))
+                results.append(await _capture(ctx, video, frames_dir, t_sec, grab, find_cuts))
                 await ctx.report_progress(DOWNLOAD_SHARE + (1 - DOWNLOAD_SHARE) * done / len(picks))
 
     await write_json(frames_dir / MANIFEST_FILE, [r.model_dump(mode="json") for r in results])
@@ -88,9 +95,15 @@ async def extract_frames(
 
 
 async def _capture(
-    ctx: StageContext, video: Path, frames_dir: Path, t_sec: int, grab: Grabber
+    ctx: StageContext,
+    video: Path,
+    frames_dir: Path,
+    t_sec: int,
+    grab: Grabber,
+    find_cuts: CutFinder,
 ) -> FrameResult:
-    """Burst inside second `t_sec`, keep the least blurry non-blank grab, or say why none."""
+    """Burst inside second `t_sec` up to any screen change, keep the least blurry non-blank
+    grab, or say why none."""
     name = f"frame_{t_sec:05d}.jpg"
     final = frames_dir / name
     known = await asyncio.to_thread(_kept_before, frames_dir, t_sec)
@@ -99,8 +112,8 @@ async def _capture(
     settings = ctx.settings
     grabs: list[Grab] = []
     problems: list[str] = []
-    for k in range(settings.frame_burst):
-        offset = k / settings.frame_burst
+    offsets = await _burst_offsets(ctx, video, t_sec, find_cuts)
+    for k, offset in enumerate(offsets):
         tmp = frames_dir / f"{name}.{k}.tmp"
         try:
             grabbed = await grab(
@@ -135,6 +148,33 @@ async def _capture(
     finally:
         for k in range(settings.frame_burst):
             (frames_dir / f"{name}.{k}.tmp").unlink(missing_ok=True)
+
+
+async def _burst_offsets(
+    ctx: StageContext, video: Path, t_sec: int, find_cuts: CutFinder
+) -> list[float]:
+    """Offsets into second `t_sec` to grab at: the burst, cut short at the first screen change.
+    The grab at t itself (the moment the notes describe) always stays."""
+    burst = [k / ctx.settings.frame_burst for k in range(ctx.settings.frame_burst)]
+    if len(burst) == 1:
+        return burst
+    try:
+        cuts = await find_cuts(
+            video,
+            float(t_sec),
+            BURST_SPAN_S,
+            threshold=ctx.settings.frame_burst_cut_score,
+            timeout_s=ctx.settings.ffmpeg_timeout_s,
+        )
+    except FrameGrabError as exc:
+        # Unknown whether the screen changes: keep only the moment the notes describe.
+        ctx.log.warning("frame_burst_scan_failed", t_sec=t_sec, error=str(exc)[:200])
+        return burst[:1]
+    changes = sorted(cut.time_s - t_sec for cut in cuts if cut.time_s > t_sec)
+    if not changes:
+        return burst
+    ctx.log.info("frame_burst_cut", t_sec=t_sec, change_s=round(changes[0], 3))
+    return [offset for offset in burst if offset < changes[0]] or burst[:1]
 
 
 def _kept_before(frames_dir: Path, t_sec: int) -> FrameResult | None:

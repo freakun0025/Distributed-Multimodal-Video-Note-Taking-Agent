@@ -4,8 +4,12 @@ import asyncio
 import itertools
 import json
 import math
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from common.config import Settings
 from tests.unit.fakes import VIDEO_ID
@@ -13,6 +17,7 @@ from worker.candidates import (
     Candidate,
     Cut,
     Grabber,
+    cuts_between,
     parse_cuts,
     plan_candidates,
     prepare_candidates,
@@ -152,3 +157,30 @@ async def test_candidate_max_zero_means_captions_only(tmp_path: Path) -> None:
     )  # fmt: skip
     assert result == []
     assert downloader.calls == []
+
+
+needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+
+
+@pytest.fixture
+def two_scene_video(tmp_path: Path) -> Path:
+    """2 s of blue, then 2 s of yellow: one screen change at 2.0 s."""
+    video = tmp_path / "v.mp4"
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error",
+         "-f", "lavfi", "-i", "color=c=blue:s=160x90:r=10:d=2",
+         "-f", "lavfi", "-i", "color=c=yellow:s=160x90:r=10:d=2",
+         "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0,format=yuv420p", "-y", str(video)],
+        check=True,
+    )  # fmt: skip
+    return video
+
+
+@needs_ffmpeg
+async def test_a_window_scan_finds_the_screen_change_at_its_video_time(
+    two_scene_video: Path,
+) -> None:
+    video = two_scene_video  # D40's burst scan
+    found = await cuts_between(video, 1.5, 1.0, threshold=1.0, timeout_s=30)
+    assert [round(cut.time_s, 1) for cut in found] == [2.0]
+    assert await cuts_between(video, 0.5, 1.0, threshold=1.0, timeout_s=30) == []

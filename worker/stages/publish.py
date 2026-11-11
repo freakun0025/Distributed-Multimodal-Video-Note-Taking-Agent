@@ -8,7 +8,9 @@
    batch (Notion archives an upload not attached within the hour), so a crash mid-append resumes
    where it stopped instead of duplicating blocks.
 3. Hand back the page ID and URL and the number of frames published; the runtime records them
-   with the checkpoint and sets COMPLETED or COMPLETED_WITH_WARNINGS. Delete video.mp4.
+   with the checkpoint and sets COMPLETED or COMPLETED_WITH_WARNINGS. Delete both downloads
+   (EXTRACT_FRAMES' video and SUMMARIZE's small preview), finished or partial: every later
+   step works from the saved frames and candidates.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from common.crypto import TokenCipher
 from common.errors import ErrorCode, ExternalApi, PermanentError
 from common.models import FrameResult, Synthesis, VideoMeta
 from common.youtube_url import canonical_url
+from worker.candidates import PREVIEW_NAME
 from worker.clients.notion import MAX_CHILDREN, NotionApi, NotionPage, notion_client, notion_id
 from worker.context import StageContext, StageOutcome
 from worker.notion_page import PageFrame, build_page, job_tag, page_title, with_upload
@@ -72,7 +75,7 @@ async def publish(ctx: StageContext, notion: NotionApi) -> StageOutcome:
         frames=len(frames),
         questions=len(synthesis.questions),
     )
-    await asyncio.to_thread((ctx.job_dir / f"{VIDEO_NAME}.mp4").unlink, missing_ok=True)
+    await asyncio.to_thread(remove_downloads, ctx.job_dir)
     return StageOutcome(
         summary={
             "page_id": page.id,
@@ -121,6 +124,17 @@ def _saved_frames(job_dir: Path, synthesis: Synthesis, manifest: object) -> list
         if result.path is not None and pick is not None:
             frames.append(PageFrame(result.t_sec, job_dir / result.path, pick.caption, pick.reason))
     return frames
+
+
+def remove_downloads(job_dir: Path) -> list[str]:
+    """Delete `video.<ext>` and `preview.<ext>` (and yt-dlp's partial files); return the names."""
+    removed: list[str] = []
+    for name in (VIDEO_NAME, PREVIEW_NAME):
+        for path in sorted(job_dir.glob(f"{name}.*")):
+            if path.is_file():
+                path.unlink(missing_ok=True)
+                removed.append(path.name)
+    return removed
 
 
 async def _read(path: Path) -> object:

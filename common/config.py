@@ -161,6 +161,11 @@ class Settings(BaseSettings):
     # FRAME_BURST grabs inside the same second, keeping the least blurry.
     frames_video_height: int = Field(default=720, gt=0)
     frame_burst: int = Field(default=3, ge=1)
+    # A scdet score at least this high inside the burst second is a screen change: later grabs
+    # would show another screen than the one the notes describe, so the burst stops there.
+    # Measured on a screen recording at 480p: typing and the cursor <= 0.25, an editor tab
+    # switch 2.6 (the whole-video cut threshold SCENE_THRESHOLD=10 misses it).
+    frame_burst_cut_score: float = Field(default=1.0, ge=0)
     frame_jpeg_quality: int = Field(default=3, ge=2, le=31)  # ffmpeg -q:v, lower is better
     # Blank frame: mean luma below this (video black is 16 on the 16-235 scale), or almost no
     # spread between darkest and brightest pixel (a fade to one colour).

@@ -12,9 +12,11 @@ No build step. With the stack running (`make up`, gateway on `http://localhost:8
 
 1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and pick the
    `extension/` folder.
-2. The settings page opens on your first Take Notes click (or: extension menu → **Options**).
-   Paste a Notion token there (until the Notion sign-in flow lands, M2) and click **Test connection**.
-3. Open a YouTube video and click **Take Notes** in the player's toolbar. Follow the job from the
-   toolbar icon's popup.
+2. Open a YouTube video and click **Take Notes** in the player's toolbar. The first time, Notion's
+   sign-in window opens: choose **Select pages**, pick the page to publish under (the default
+   destination, `NOTION_DEFAULT_PARENT_ID`), then **Allow access**. The token is kept by the
+   extension, so later clicks don't ask again. (Or connect first: extension menu → **Options** →
+   **Connect Notion**.)
+3. Follow the job from the toolbar icon's popup; when it is done, **View in Notion** opens the page.
 
 Extension unit tests: `make test-ext` (Node 18+, no npm packages).

@@ -67,15 +67,30 @@ def parse_cuts(output: str) -> list[Cut]:
 
 async def detect_cuts(video: Path, settings: Settings) -> list[Cut]:
     """Scene cuts over the whole video (decodes every frame: ~8 s for 11 min at 480p)."""
+    return await _scdet(
+        ["-i", str(video)], settings.scene_threshold, settings.scene_detect_timeout_s
+    )
+
+
+async def cuts_between(
+    video: Path, start_s: float, span_s: float, *, threshold: float, timeout_s: float
+) -> list[Cut]:
+    """Scene changes scoring at least `threshold` in [start_s, start_s + span_s), at video
+    times. EXTRACT_FRAMES uses it to keep a frame burst on the screen the notes describe."""
+    window = ["-ss", f"{start_s:.3f}", "-t", f"{span_s:.3f}", "-i", str(video)]
+    cuts = await _scdet(window, threshold, timeout_s)
+    # Input seeking restarts timestamps at 0, so scdet's times are relative to the window.
+    return [Cut(time_s=start_s + cut.time_s, score=cut.score) for cut in cuts]
+
+
+async def _scdet(source: list[str], threshold: float, timeout_s: float) -> list[Cut]:
     process = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(video), "-an",
-        "-vf", _SCDET_FILTER.format(threshold=settings.scene_threshold), "-f", "null", "-",
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", *source, "-an",
+        "-vf", _SCDET_FILTER.format(threshold=threshold), "-f", "null", "-",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )  # fmt: skip
     try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(), settings.scene_detect_timeout_s
-        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout_s)
     except TimeoutError:
         process.kill()
         await process.wait()
