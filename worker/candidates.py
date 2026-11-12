@@ -21,7 +21,7 @@ from common.config import Settings
 from common.logging import get_logger
 from worker.artifacts import write_json_atomic
 from worker.clients.youtube import ProgressFn, VideoDownloader
-from worker.media import FrameGrabError, Grab, grab_frame
+from worker.media import FrameGrabError, Grab, grab_frame, run_ffmpeg
 
 CANDIDATES_DIR = "candidates"
 MANIFEST_FILE = "manifest.json"
@@ -84,20 +84,13 @@ async def cuts_between(
 
 
 async def _scdet(source: list[str], threshold: float, timeout_s: float) -> list[Cut]:
-    process = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", *source, "-an",
-        "-vf", _SCDET_FILTER.format(threshold=threshold), "-f", "null", "-",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )  # fmt: skip
-    try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout_s)
-    except TimeoutError:
-        process.kill()
-        await process.wait()
-        raise FrameGrabError("scene detection timed out") from None
-    if process.returncode != 0:
-        raise FrameGrabError(stderr.decode("utf-8", "replace").strip()[-200:] or "scdet failed")
-    return parse_cuts(stdout.decode("utf-8", "replace"))
+    run = await run_ffmpeg(
+        [*source, "-an", "-vf", _SCDET_FILTER.format(threshold=threshold), "-f", "null", "-"],
+        timeout_s,
+    )
+    if run.returncode != 0:
+        raise FrameGrabError(run.stderr.strip()[-200:] or "scdet failed")
+    return parse_cuts(run.stdout)
 
 
 def plan_candidates(

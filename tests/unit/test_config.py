@@ -17,7 +17,7 @@ def _settings(monkeypatch: pytest.MonkeyPatch, **env: str) -> Settings:
 def test_defaults_match_the_documented_values(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(monkeypatch)
     assert settings.retry_delays == [10, 30, 90]
-    assert settings.retry_max_attempts == 5
+    assert settings.retry_max_attempts == 4
     assert settings.max_video_seconds == 1200
     assert [str(spec) for spec in settings.llm_chain] == [
         "gemini-3.6-flash:low:90",

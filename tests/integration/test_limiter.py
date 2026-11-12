@@ -38,6 +38,23 @@ def _limiter(redis: Redis, prefix: str, bucket: Bucket, max_wait_s: float = 5) -
     return RateLimiter(redis, {ExternalApi.LLM: bucket}, max_wait_s, key_prefix=prefix)
 
 
+async def _redis_now(redis: Redis) -> float:
+    seconds, micros = await redis.time()
+    return float(seconds) + micros / 1_000_000
+
+
+async def _idle_on_redis_clock(redis: Redis, seconds: float) -> None:
+    """Let `seconds` pass on Redis's clock, the one the bucket refills by. Redis runs in Docker's
+    VM: one itest run saw its clock advance ~1 ms while the test slept 0.5 s on the host."""
+    until = await _redis_now(redis) + seconds
+    for _ in range(100):
+        left = until - await _redis_now(redis)
+        if left <= 0:
+            return
+        await asyncio.sleep(left)
+    raise AssertionError(f"Redis's clock did not advance {seconds:g} s")
+
+
 async def test_the_burst_passes_at_once_then_calls_are_spaced_at_the_rate(
     redis: Redis, prefix: str
 ) -> None:
@@ -80,7 +97,7 @@ async def test_an_idle_bucket_refills_to_capacity_and_no_further(redis: Redis, p
     limiter = _limiter(redis, prefix, Bucket(rate_per_s=10, capacity=2))
     for _ in range(2):
         await limiter.acquire(ExternalApi.LLM)
-    await asyncio.sleep(0.5)  # enough for 5 tokens; the bucket holds only 2
+    await _idle_on_redis_clock(redis, 0.5)  # enough for 5 tokens; the bucket holds only 2
     waits = [await limiter.acquire(ExternalApi.LLM) for _ in range(3)]
     assert waits[:2] == [0, 0]
     assert 0.1 - TOLERANCE_S <= waits[2] <= 0.1

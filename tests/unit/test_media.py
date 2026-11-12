@@ -7,11 +7,14 @@ machines may not) and is otherwise skipped; the fakes-stack integration tests co
 import math
 import shutil
 import subprocess
+import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from worker.media import FrameGrabError, Grab, grab_frame, parse_stats, sharpest
+from worker import media
+from worker.media import FrameGrabError, Grab, grab_frame, parse_stats, run_ffmpeg, sharpest
 
 # What `-vf signalstats,blurdetect,metadata=print` printed for one grab in the worker image:
 # the filter runs on a second frame too, so every key appears twice.
@@ -70,6 +73,45 @@ def test_the_least_blurry_grab_wins_and_ties_go_to_the_earliest() -> None:
     ]
     assert sharpest(grabs).at_s == 42.333
     assert sharpest([_grab(120, 20, 220, math.nan, 1.0), _grab(120, 20, 220, 9.0, 1.5)]).at_s == 1.5
+
+
+class FakeRun:
+    """Stands in for subprocess.run; records the call and the thread it ran on."""
+
+    def __init__(self, result: subprocess.CompletedProcess[bytes] | Exception) -> None:
+        self.result = result
+        self.calls: list[tuple[list[str], dict[str, Any]]] = []
+        self.threads: list[str] = []
+
+    def __call__(self, command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        self.calls.append((command, kwargs))
+        self.threads.append(threading.current_thread().name)
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+async def test_ffmpeg_runs_as_a_blocking_subprocess_in_a_worker_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = FakeRun(subprocess.CompletedProcess(["ffmpeg"], 0, b"lavfi.blur=4.5\n", b"warn\xff"))
+    monkeypatch.setattr(media.subprocess, "run", fake)
+    run = await run_ffmpeg(["-i", "v.mp4"], timeout_s=12)
+    assert (run.returncode, run.stdout, run.stderr) == (0, "lavfi.blur=4.5\n", "warn�")
+    [(command, kwargs)] = fake.calls
+    assert command[0] == "ffmpeg" and command[-2:] == ["-i", "v.mp4"] and "-nostdin" in command
+    assert kwargs["timeout"] == 12 and kwargs["capture_output"] is True
+    assert kwargs["stdin"] is subprocess.DEVNULL
+    assert fake.threads != [threading.main_thread().name]  # never blocks the event loop
+
+
+async def test_an_ffmpeg_past_its_timeout_is_a_frame_grab_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # subprocess.run has already killed and reaped the child when it raises TimeoutExpired.
+    monkeypatch.setattr(media.subprocess, "run", FakeRun(subprocess.TimeoutExpired("ffmpeg", 7)))
+    with pytest.raises(FrameGrabError, match="timed out after 7s"):
+        await run_ffmpeg(["-i", "v.mp4"], timeout_s=7)
 
 
 needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")

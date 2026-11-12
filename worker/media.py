@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import math
+import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +27,39 @@ _STDERR_MAX_CHARS = 200
 
 class FrameGrabError(Exception):
     """ffmpeg produced no frame (e.g. a time past the end, or an unreadable file)."""
+
+
+@dataclass(frozen=True)
+class FfmpegRun:
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+async def run_ffmpeg(args: Sequence[str], timeout_s: float) -> FfmpegRun:
+    """Run ffmpeg with `args` in a worker thread; FrameGrabError once `timeout_s` has passed.
+
+    A blocking `subprocess.run` in a thread, not asyncio's subprocess API: during concurrent grabs
+    asyncio once never saw an ffmpeg exit, and the stage waited forever with its message unacked
+    (CP9, D43). `subprocess.run` waits for its own child, and kills and reaps it at the timeout.
+    """
+    command = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", *args]
+    try:
+        done = await asyncio.to_thread(
+            subprocess.run,
+            command,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise FrameGrabError(f"ffmpeg timed out after {timeout_s:g}s") from None
+    return FfmpegRun(
+        returncode=done.returncode,
+        stdout=done.stdout.decode("utf-8", "replace"),
+        stderr=done.stderr.decode("utf-8", "replace"),
+    )
 
 
 @dataclass(frozen=True)
@@ -60,24 +95,17 @@ async def grab_frame(
     video: Path, at_s: float, out: Path, *, quality: int, timeout_s: float
 ) -> Grab:
     """One JPEG from `video` at `at_s` seconds, written to `out`, with its stats."""
-    command = [
-        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-        "-ss", f"{at_s:.3f}", "-i", str(video),
-        "-frames:v", "1", "-vf", _STATS_FILTER, "-q:v", str(quality),
-        "-f", "mjpeg", "-y", str(out),
-    ]  # fmt: skip
-    process = await asyncio.create_subprocess_exec(
-        *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout_s)
-    except TimeoutError:
-        process.kill()
-        await process.wait()
-        raise FrameGrabError(f"ffmpeg timed out after {timeout_s:g}s") from None
-    stats = parse_stats(stdout.decode("utf-8", "replace"))
-    if process.returncode != 0 or not stats:  # with exit code 0 and stats, a frame was written
-        detail = stderr.decode("utf-8", "replace").strip()[-_STDERR_MAX_CHARS:]
+    run = await run_ffmpeg(
+        [
+            "-ss", f"{at_s:.3f}", "-i", str(video),
+            "-frames:v", "1", "-vf", _STATS_FILTER, "-q:v", str(quality),
+            "-f", "mjpeg", "-y", str(out),
+        ],
+        timeout_s,
+    )  # fmt: skip
+    stats = parse_stats(run.stdout)
+    if run.returncode != 0 or not stats:  # with exit code 0 and stats, a frame was written
+        detail = run.stderr.strip()[-_STDERR_MAX_CHARS:]
         raise FrameGrabError(detail or "ffmpeg produced no frame")
     return Grab(
         at_s=at_s,

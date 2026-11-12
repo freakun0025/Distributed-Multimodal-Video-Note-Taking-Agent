@@ -32,7 +32,7 @@ Run from a WSL/Linux shell. The switches live in the fake APIs, so start the sta
 | HTTP 429 from an external API | `make fake-429 api=youtube` (or `llm`, `notion`; `count=2` for two in a row, `retry_after=20`) | The popup shows "Waiting … retrying in 10 s" (then 30 s, 90 s), never an error; the job completes |
 | Worker crash | `make kill-worker stage=EXTRACT_FRAMES` (any stage), then Take Notes | The worker running that stage is SIGKILLed; the script prints which worker got the message and how long recovery took; one Notion page |
 | Some / all frames fail | `make fake-frames mode=partial` (or `none`) | `COMPLETED_WITH_WARNINGS`; the popup lists the missing frames; the page keeps the others (or is text only) |
-| Dead-letter queue | `make fake-unavailable` (or a private video on the real stack) | Waiting through every retry, then `DEAD_LETTERED` after about 4 minutes (10+30+90+90 s); the message is in `jobs.dlq` (RabbitMQ UI, `localhost:15672`) |
+| Dead-letter queue | `make fake-unavailable` (or a private video on the real stack) | Waiting through every retry, then `DEAD_LETTERED` after about 2 minutes (4 attempts, 10+30+90 s between them); the message is in `jobs.dlq` (RabbitMQ UI, `localhost:15672`) |
 
 `make fake-reset` makes every fake API work again; `make fakes` shows the switches.
 `make itest` runs all of these as integration tests.

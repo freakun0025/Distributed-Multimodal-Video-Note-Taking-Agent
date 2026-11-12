@@ -198,7 +198,7 @@ async def test_no_picks_means_no_download(tmp_path: Path) -> None:
 
 
 async def test_a_failed_download_is_retried_while_the_budget_lasts(tmp_path: Path) -> None:
-    ctx = _context(tmp_path, [42], attempt=4)  # RETRY_MAX_ATTEMPTS defaults to 5
+    ctx = _context(tmp_path, [42], attempt=3)  # RETRY_MAX_ATTEMPTS defaults to 4
     error = RetryableError(ErrorCode.UPSTREAM_ERROR, "503", api=ExternalApi.YOUTUBE)
     with pytest.raises(RetryableError):
         await _extract(ctx, FakeDownloader(error), FakeGrabber({}))
@@ -207,7 +207,7 @@ async def test_a_failed_download_is_retried_while_the_budget_lasts(tmp_path: Pat
 @pytest.mark.parametrize(
     ("error", "attempt"),
     [
-        (RetryableError(ErrorCode.UPSTREAM_ERROR, "503", api=ExternalApi.YOUTUBE), 5),
+        (RetryableError(ErrorCode.UPSTREAM_ERROR, "503", api=ExternalApi.YOUTUBE), 4),
         (PermanentError(ErrorCode.VIDEO_UNSUPPORTED, "live", api=ExternalApi.YOUTUBE), 1),
     ],
     ids=["budget spent", "can never work"],
