@@ -305,8 +305,19 @@ async def test_notes_see_candidate_frames_and_picks_snap_to_them(tmp_path: Path)
     assert progress[0] <= 0.3 < progress[-1] == 1.0
 
 
+async def test_a_refused_preview_retries_the_stage_before_any_llm_call(tmp_path: Path) -> None:
+    ctx = _context(tmp_path, attempt=3)  # RETRY_MAX_ATTEMPTS defaults to 4
+    refused = RetryableError(ErrorCode.VIDEO_UNAVAILABLE, "HTTP 403", api=ExternalApi.YOUTUBE)
+    llm = ScriptedLlm(json.dumps(VALID))
+    with pytest.raises(RetryableError) as raised:
+        await summarize(ctx, llm, PreviewDownloader(refused), detect=_no_cuts, grab=_grab_ok)
+    assert raised.value is refused
+    assert llm.requests == []  # no quota spent on notes that would have guessed captions
+    assert not (ctx.job_dir / "synthesis.json").exists()
+
+
 async def test_without_candidates_the_notes_come_from_the_captions(tmp_path: Path) -> None:
-    ctx = _context(tmp_path)
+    ctx = _context(tmp_path, attempt=4)  # the last attempt: captions-only rather than the DLQ
     blocked = RetryableError(ErrorCode.RATE_LIMITED, "bot check", api=ExternalApi.YOUTUBE)
     llm = ScriptedLlm(json.dumps(VALID))
     outcome = await summarize(ctx, llm, PreviewDownloader(blocked), detect=_no_cuts, grab=_grab_ok)

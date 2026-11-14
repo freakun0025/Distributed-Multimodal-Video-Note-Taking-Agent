@@ -342,6 +342,9 @@ def test_candidate_frames_sit_in_the_transcript_at_their_time() -> None:
     assert "at least one for every section" in request.system
     assert "empty, greyed out or still being built" in request.system
     assert "never what is said around it" in request.system
+    assert "never completed from the transcript or another frame" in request.system  # judge, CP12
+    assert "Name a person or character only when the" in request.system  # Ramayana 1:47, CP12
+    assert "an old output still in the console" in request.system  # Java 7:26, CP12
     assert "a frame of only the speaker" in request.system  # last resort, like a title card
     # D38: "Sonnet 5" on screen came back as "Sonnet 3.5": copy exactly or leave it out.
     assert "leave out any you cannot read with certainty" in request.system

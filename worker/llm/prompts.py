@@ -155,13 +155,20 @@ by their exact t_sec:
 section that has a candidate inside it;
   - choose frames where a slide, diagram, table, code listing or worked example is complete, \
 with its text and labels filled in, over frames where most of it is empty, greyed out or still \
-being built;
+being built (code still being typed: pick a later candidate where the line is finished);
   - prefer frames that show what a note explains (a definition, diagram, formula, code, chart, \
 map, timeline, comparison or result); a frame of only the speaker, or a title, intro or end \
 card, only when nothing else is left.
 {order_rule}
 - caption: at most two sentences on what is visible in that frame (its text, labels, numbers, \
-code or picture). Describe only what is on screen in that frame, never what is said around it."""
+code or picture). Describe only what is on screen in that frame, never what is said around it; \
+text that is cut off or half typed is described as it stands ("a print call being typed"), \
+never completed from the transcript or another frame. When the frame shows the moment before a \
+result (code not run yet, an old output still in the console, a slide before its last point \
+appears), describe what is there, not the result the speaker announces. Name a person or \
+character only when the frame shows the name or the transcript at that moment says who is on \
+screen; otherwise describe them by what is visible ("a blue-skinned man holding back a woman in \
+purple")."""
 
 HEADER = """\
 Video: {title} ({duration})

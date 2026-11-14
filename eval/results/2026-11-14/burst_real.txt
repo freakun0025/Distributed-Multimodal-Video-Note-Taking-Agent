@@ -1,0 +1,28 @@
+# Spec §9 queue resilience on the real stack, 2026-11-14 13:42 UTC: 6 different videos POSTed
+# back to back (the request Take Notes sends), 2 workers, real YouTube and real Gemini (free
+# tier, 5 requests/min); Notion calls went to the fake Notion (NOTION_API_URL override), as the
+# real token lives only in the extension. Then `make burst-report since=8`:
+
+6 jobs submitted in the last 8 minutes
+
+job       video        status                   finished after  title
+3347916c  Js05B8Z1ivE  COMPLETED                          7:12  Python Tutorial for Beginners - Learn th
+43619840  b5l5UodFzMo  COMPLETED                          4:50  Learn Java in 15 Minutes (seriously)
+9dd40ca9  aXM56qJQT7Y  COMPLETED                          6:15  Learn 97% Of Claude Code In Under 18 Min
+bb324c6b  KnviRvdmFTc  COMPLETED                          6:06  The History of the World in 20 Minutes
+7854a6cb  _L39rN6gz7Y  COMPLETED                          6:12  Decision and Classification Trees, Clear
+1216e3b2  Vh4N3r1XQyw  COMPLETED                          5:23  The Original Ramayana Is TOO Brutal to A
+
+6 jobs, 6 completed; drained 7:12 after the first job was submitted.
+LLM answers to these jobs: 6 x 200, 1 x 503 (gemini-3.6-flash: 7)
+429s from the LLM: 0
+
+# The 503 ("model is currently experiencing high demand") was retried after 10 s. YouTube refused
+# one 720p download twice (HTTP 403): retried, frames 6/6 on attempt 3. Every job published all
+# its frames. Two jobs lost their candidate frames to a refused preview download and wrote
+# captions from the transcript alone; since D48 that retries instead.
+
+# Worker crash on the real stack (make kill-worker stage=PUBLISH, user, 2026-11-14 13:36 UTC):
+# worker 35a09cfb0fbc created the Notion page at 13:36:11.742 and was SIGKILLed; the message was
+# redelivered to adf7b8a30981 at 13:36:11.912 (0.17 s), which found the same page, added the 6
+# frames and finished at 13:36:19.886 (8.1 s after the kill). One POST /v1/pages in total.

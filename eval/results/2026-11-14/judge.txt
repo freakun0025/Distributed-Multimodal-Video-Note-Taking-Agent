@@ -1,0 +1,172 @@
+# Round 1, 18:09 UTC: judge rubric v1 (correct background counted as unsupported)
+18:09:53
+Judge: gemini-3.8-flash:medium:180, gemini-3.6-flash:medium:120, gemini-3.5-flash-lite:medium:60
+
+2026-11-14 18:10:31 [info     ] llm_usage                      images=36 model=gemini-3.6-flash output_tokens=478 prompt_tokens=28995 thought_tokens=2133
+Decision and Classification Trees, Clearly Explained!!!
+  job 7854a6cb-3eca-4d81-b293-fbffea2a1460 of 2026-11-14 13:42 UTC, _L39rN6gz7Y
+  scores: faithfulness 5, coverage 5, structure 5, questions 5, overall 5 (judged by gemini-3.6-flash)
+  pictures: 6 judged; caption matches 6, says why 6, useful 6
+  unsupported: The claim that enforcing leaf sample limits provides '75% precision' uses formal machine learning terminology not present in the video, which only states that 75% of people in the leaf loved Cool As Ice.
+  comment: The revision notes are thorough, accurately structured, and cover all relevant concepts from the video step-by-step. All figures are well-chosen with informative captions and clear justifications, and the practice questions effectively test key material.
+  verdict: PASS
+
+2026-11-14 18:11:00 [info     ] llm_usage                      images=36 model=gemini-3.6-flash output_tokens=545 prompt_tokens=31280 thought_tokens=1471
+The History of the World in 20 Minutes
+  job 76636768-9405-4ef9-86e2-52df95ab3c58 of 2026-11-14 18:04 UTC, KnviRvdmFTc
+  scores: faithfulness 3, coverage 4, structure 4, questions 4, overall 4 (judged by gemini-3.6-flash)
+  pictures: 6 judged; caption matches 6, says why 6, useful 6
+  unsupported: Terms 'Punic Wars', 'Hasmonean Revolt', and 'Julian calendar' are added by the notes author and not mentioned in the transcript.
+  unsupported: Names 'Edict of Milan', 'Council of Nicaea', '1066', 'Pope Urban II', and 'Berlin Conference' do not appear in the video or visuals.
+  missed: The video's specific humor and details regarding ancient hygiene practices (sponges on sticks, broken clay pots, pigsty toilets) were omitted.
+  comment: The study notes provide a highly structured and comprehensive summary of world history following the video's chronological progression. However, several historical terms and proper names not stated in the original video context were added into the text and self-test questions.
+  verdict: BELOW THE BAR
+
+2026-11-14 18:11:01 [warning  ] llm_model_benched              for_s=49738.847178936005 model=gemini-3.6-flash reason=daily_quota
+2026-11-14 18:11:01 [warning  ] llm_step_down                  code=RATE_LIMITED model=gemini-3.6-flash next=gemini-3.5-flash-lite reason=daily_quota
+2026-11-14 18:11:23 [info     ] llm_usage                      images=27 model=gemini-3.5-flash-lite output_tokens=296 prompt_tokens=21164 thought_tokens=886
+The Original Ramayana Is TOO Brutal to Adapt
+  job d6756152-fb43-4631-a47c-57b57a4a1db3 of 2026-11-14 18:04 UTC, Vh4N3r1XQyw
+  scores: faithfulness 5, coverage 5, structure 5, questions 5, overall 5 (judged by gemini-3.5-flash-lite)
+  pictures: 3 judged; caption matches 2, says why 3, useful 3
+    [1:47] The caption mentions Ma Sita, but she is not visible in the picture.
+  comment: The notes provide a comprehensive and highly accurate summary of the video content, well-structured chronologically with relevant self-test questions. The only minor issue is that the first picture's caption refers to Ma Sita, who is not visible in that frame.
+  verdict: BELOW THE BAR
+
+Learn 97% Of Claude Code In Under 18 Minutes
+  job 9dd40ca9-e313-4561-8d4b-33fec6db050c of 2026-11-14 13:41 UTC, aXM56qJQT7Y
+  judge failed: RetryableError: CONNECTION_ERROR: llm connection failed
+
+Learn Java in 15 Minutes (seriously)
+  job 8c7017fd-4295-4337-9b7f-69564b30d906 of 2026-11-14 18:04 UTC, b5l5UodFzMo
+  judge failed: RetryableError: CONNECTION_ERROR: llm connection failed
+
+Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)
+  job d0c4b87a-a495-45a4-a580-a8303dfa2044 of 2026-11-14 18:04 UTC, dQw4w9WgXcQ
+  judge failed: RetryableError: CONNECTION_ERROR: llm connection failed
+
+2026-11-14 18:12:18 [info     ] llm_usage                      images=7 model=gemini-3.5-flash-lite output_tokens=263 prompt_tokens=5903 thought_tokens=None
+When You've Read All the Lorebooks | KONOSUBA - God's blessing on this wonderful world!
+  job dd5e1b08-e0d2-4556-b054-06caeabfef74 of 2026-11-14 18:04 UTC, zSABTWqz-I0
+  scores: faithfulness 5, coverage 5, structure 5, questions 5, overall 5 (judged by gemini-3.5-flash-lite)
+  pictures: 3 judged; caption matches 3, says why 3, useful 3
+  comment: The revision notes accurately capture all the key narrative points and dialogue details from the video clip. The pictures, captions, and self-test questions are all well-aligned with the transcript.
+  verdict: PASS
+
+2026-11-14 18:12:33 [info     ] llm_usage                      images=36 model=gemini-3.5-flash-lite output_tokens=427 prompt_tokens=29518 thought_tokens=None
+10 Important Python Concepts In 20 Minutes (held-out)
+  job 7ed56b34-dd6c-4be0-b791-27356edaffaf of 2026-11-14 08:43 UTC, Gx5qb1uHss4
+  scores: faithfulness 5, coverage 5, structure 5, questions 5, overall 5 (judged by gemini-3.5-flash-lite)
+  pictures: 6 judged; caption matches 6, says why 6, useful 6
+  comment: The notes are exceptionally detailed, faithful to the video, and cover all ten concepts accurately. The structure aligns well with the video's presentation, and the self-test questions effectively reinforce the key ideas.
+  verdict: PASS
+
+5 jobs judged; mean faithfulness 4.6, coverage 4.8, structure 4.8, questions 4.8, overall 4.8; captions matching their picture 23/24
+
+make: *** [Makefile:109: judge] Error 1
+
+# Round 2, 18:17 UTC: rubric v2 (background listed separately), after the D48 re-runs
+Judge: gemini-3.8-flash:medium:180, gemini-3.6-flash:medium:120, gemini-3.5-flash-lite:medium:60
+
+2026-11-14 18:18:30 [warning  ] llm_step_down                  code=UPSTREAM_TIMEOUT model=gemini-3.5-flash-lite next=None reason=overloaded
+Decision and Classification Trees, Clearly Explained!!!
+  job 7854a6cb-3eca-4d81-b293-fbffea2a1460 of 2026-11-14 13:42 UTC, _L39rN6gz7Y
+  judge failed: RetryableError: UPSTREAM_TIMEOUT: llm timed out
+
+The History of the World in 20 Minutes
+  job 76636768-9405-4ef9-86e2-52df95ab3c58 of 2026-11-14 18:04 UTC, KnviRvdmFTc
+  judge failed: RetryableError: CONNECTION_ERROR: llm connection failed
+
+The Original Ramayana Is TOO Brutal to Adapt
+  job 7b56f29f-037c-4ce3-9b54-cde391e77caa of 2026-11-14 18:14 UTC, Vh4N3r1XQyw
+  judge failed: RetryableError: CONNECTION_ERROR: llm connection failed
+
+2026-11-14 18:19:06 [info     ] llm_usage                      images=36 model=gemini-3.5-flash-lite output_tokens=385 prompt_tokens=28338 thought_tokens=920
+Learn 97% Of Claude Code In Under 18 Minutes
+  job 9dd40ca9-e313-4561-8d4b-33fec6db050c of 2026-11-14 13:41 UTC, aXM56qJQT7Y
+  scores: faithfulness 5, coverage 5, structure 5, questions 5, overall 5 (judged by gemini-3.5-flash-lite)
+  pictures: 5 judged; caption matches 5, says why 5, useful 5
+  comment: The notes provide a comprehensive, exceptionally well-structured summary of the video tutorial on Claude Code. All pictures are accurate and properly contextualized, and key frameworks like B.I.T.E. are clearly and thoroughly explained.
+  verdict: PASS
+
+2026-11-14 18:19:20 [info     ] llm_usage                      images=36 model=gemini-3.5-flash-lite output_tokens=479 prompt_tokens=30354 thought_tokens=None
+Learn Java in 15 Minutes (seriously)
+  job 8c7017fd-4295-4337-9b7f-69564b30d906 of 2026-11-14 18:04 UTC, b5l5UodFzMo
+  scores: faithfulness 5, coverage 5, structure 5, questions 5, overall 5 (judged by gemini-3.5-flash-lite)
+  pictures: 6 judged; caption matches 5, says why 6, useful 6
+    [7:26] The caption says the console output displays 5, but the visible console output in the picture displays 'Hello, World!' from a previous run.
+  comment: The notes are exceptionally comprehensive, accurate, and well-structured, capturing nearly every detail of the Java tutorial clearly. The picture captions accurately reflect the content, with only a minor mismatch in one console output display. The self-test questions and structural flow match the video's progression perfectly.
+  verdict: BELOW THE BAR
+
+2026-11-14 18:19:33 [info     ] llm_usage                      images=11 model=gemini-3.5-flash-lite output_tokens=284 prompt_tokens=8489 thought_tokens=None
+Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)
+  job d0c4b87a-a495-45a4-a580-a8303dfa2044 of 2026-11-14 18:04 UTC, dQw4w9WgXcQ
+  scores: faithfulness 5, coverage 5, structure 5, questions 5, overall 5 (judged by gemini-3.5-flash-lite)
+  pictures: 3 judged; caption matches 3, says why 3, useful 3
+  background (allowed): Rick Astley
+  comment: The study notes are exceptionally accurate and cover the entire video transcript and visual content comprehensively. The section headings align well with the video flow, and the pictures and test questions match the content precisely.
+  verdict: PASS
+
+2026-11-14 18:19:47 [info     ] llm_usage                      images=7 model=gemini-3.5-flash-lite output_tokens=270 prompt_tokens=5979 thought_tokens=304
+When You've Read All the Lorebooks | KONOSUBA - God's blessing on this wonderful world!
+  job dd5e1b08-e0d2-4556-b054-06caeabfef74 of 2026-11-14 18:04 UTC, zSABTWqz-I0
+  scores: faithfulness 5, coverage 5, structure 5, questions 5, overall 5 (judged by gemini-3.5-flash-lite)
+  pictures: 3 judged; caption matches 3, says why 3, useful 3
+  comment: The revision notes accurately capture all the details, dialogue, and lore from the video without introducing unsupported claims. The pictures are well-chosen and perfectly matched with their captions and reasons.
+  verdict: PASS
+
+2026-11-14 18:20:08 [info     ] llm_usage                      images=36 model=gemini-3.5-flash-lite output_tokens=437 prompt_tokens=29594 thought_tokens=None
+10 Important Python Concepts In 20 Minutes (held-out)
+  job 7ed56b34-dd6c-4be0-b791-27356edaffaf of 2026-11-14 08:43 UTC, Gx5qb1uHss4
+  scores: faithfulness 5, coverage 5, structure 5, questions 5, overall 5 (judged by gemini-3.5-flash-lite)
+  pictures: 6 judged; caption matches 6, says why 6, useful 6
+  comment: The revision notes are extremely accurate and well-structured, capturing every core concept from the video with clear examples, precise definitions, and helpful code snippet pictures. The self-test questions effectively test understanding of the main points.
+  verdict: PASS
+
+5 jobs judged; mean faithfulness 5.0, coverage 5.0, structure 5.0, questions 5.0, overall 5.0; captions matching their picture 22/23
+
+make: *** [Makefile:109: judge] Error 1
+
+# Round 3, 18:20 UTC: the requests that failed in round 2 (connection errors), retried
+Judge: gemini-3.8-flash:medium:180, gemini-3.6-flash:medium:120, gemini-3.5-flash-lite:medium:60
+
+2026-11-14 18:21:06 [info     ] llm_usage                      images=36 model=gemini-3.5-flash-lite output_tokens=438 prompt_tokens=29071 thought_tokens=671
+Decision and Classification Trees, Clearly Explained!!!
+  job 7854a6cb-3eca-4d81-b293-fbffea2a1460 of 2026-11-14 13:42 UTC, _L39rN6gz7Y
+  scores: faithfulness 5, coverage 5, structure 5, questions 5, overall 5 (judged by gemini-3.5-flash-lite)
+  pictures: 6 judged; caption matches 6, says why 6, useful 6
+  comment: These study notes are exceptionally well-organized and thorough, accurately capturing every mathematical formula, terminology definition, and algorithmic step presented in the video. The inclusion of relevant visual frames and clear self-test questions makes this an outstanding revision resource.
+  verdict: PASS
+
+The History of the World in 20 Minutes
+  job 76636768-9405-4ef9-86e2-52df95ab3c58 of 2026-11-14 18:04 UTC, KnviRvdmFTc
+  judge failed: RetryableError: CONNECTION_ERROR: llm connection failed
+
+2026-11-14 18:21:41 [info     ] llm_usage                      images=27 model=gemini-3.5-flash-lite output_tokens=291 prompt_tokens=21169 thought_tokens=1116
+The Original Ramayana Is TOO Brutal to Adapt
+  job 7b56f29f-037c-4ce3-9b54-cde391e77caa of 2026-11-14 18:14 UTC, Vh4N3r1XQyw
+  scores: faithfulness 5, coverage 5, structure 5, questions 5, overall 5 (judged by gemini-3.5-flash-lite)
+  pictures: 3 judged; caption matches 3, says why 3, useful 3
+  comment: The notes provide an exceptionally faithful, comprehensive, and well-structured summary of the video's content. All key narrative arcs, verses, and narrative beats are accurately captured, the self-test questions are rigorous and relevant, and the pictures are properly selected and captioned.
+  verdict: PASS
+
+2 jobs judged; mean faithfulness 5.0, coverage 5.0, structure 5.0, questions 5.0, overall 5.0; captions matching their picture 9/9
+
+make: *** [Makefile:109: judge] Error 1
+
+# Round 4, 18:21 UTC: History, retried
+Judge: gemini-3.8-flash:medium:180, gemini-3.6-flash:medium:120, gemini-3.5-flash-lite:medium:60
+
+2026-11-14 18:21:59 [info     ] llm_usage                      images=36 model=gemini-3.5-flash-lite output_tokens=485 prompt_tokens=31356 thought_tokens=1112
+The History of the World in 20 Minutes
+  job 76636768-9405-4ef9-86e2-52df95ab3c58 of 2026-11-14 18:04 UTC, KnviRvdmFTc
+  scores: faithfulness 5, coverage 5, structure 5, questions 5, overall 5 (judged by gemini-3.5-flash-lite)
+  pictures: 6 judged; caption matches 6, says why 6, useful 6
+  background (allowed): modern-day Iraq
+  background (allowed): c. 240 BC
+  background (allowed): 1066
+  background (allowed): Berlin Conference
+  comment: The notes do an exceptional job of distilling a fast-paced, 20-minute world history overview into a well-organized, comprehensive study guide. The captions accurately match the included map and illustration frames, and the self-test questions thoroughly review key historical concepts presented in the video.
+  verdict: PASS
+
+1 jobs judged; mean faithfulness 5.0, coverage 5.0, structure 5.0, questions 5.0, overall 5.0; captions matching their picture 6/6

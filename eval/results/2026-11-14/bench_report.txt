@@ -1,0 +1,22 @@
+# make bench-report (eval videos, newest job each; several ran in bursts, so stage times include waits for a free worker)
+video                                    length queued transc summar frames publis  total retries
+Decision and Classification Trees, Clear  18:08   15.3   80.5  226.9   36.3   12.8  371.9       1
+The History of the World in 20 Minutes    19:41    0.0   15.5  127.3   39.2    5.3  187.3       0
+The Original Ramayana Is TOO Brutal to A  10:48    0.1    7.3  128.7   16.2    2.9  155.1       2
+Learn 97% Of Claude Code In Under 18 Min  17:47    5.5   81.6  214.0   64.8    8.8  374.8       1
+Learn Java in 15 Minutes (seriously)      19:50    5.8   57.8   91.9   31.9    9.6  196.9       0
+Rick Astley - Never Gonna Give You Up (O   3:33    7.7   82.7   76.9   23.0    6.8  197.1       0
+When You've Read All the Lorebooks | KON   2:08   11.8  104.7   59.3   21.1    3.8  200.7       0
+10 Important Python Concepts In 20 Minut  18:49    0.1   45.0  235.2   24.6  776.1 1081.0       0
+
+Seconds. A stage runs from entering its status to leaving it, retries included; a
+job keeps the status until a worker claims the next stage, so with more jobs than
+workers a stage's time also holds the wait for a free worker.
+
+# make bench-report ids=b61dae8e-... (one job alone on 2 workers, real YouTube/Gemini/Notion, SIGKILL in PUBLISH)
+video                                    length queued transc summar frames publis  total retries
+The Most Valuable 20 Minutes You’ll Spen  19:30    0.1    6.5   95.4   18.1    9.5  129.4       1
+
+Seconds. A stage runs from entering its status to leaving it, retries included; a
+job keeps the status until a worker claims the next stage, so with more jobs than
+workers a stage's time also holds the wait for a free worker.

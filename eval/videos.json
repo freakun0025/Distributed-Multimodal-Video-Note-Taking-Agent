@@ -1,0 +1,14 @@
+{
+  "fixed": [
+    {"video_id": "_L39rN6gz7Y", "kind": "slides that build up step by step (StatQuest)"},
+    {"video_id": "KnviRvdmFTc", "kind": "history, maps and illustrations"},
+    {"video_id": "Vh4N3r1XQyw", "kind": "mythology, storytelling"},
+    {"video_id": "aXM56qJQT7Y", "kind": "software tool tutorial"},
+    {"video_id": "b5l5UodFzMo", "kind": "programming, screen recording"},
+    {"video_id": "dQw4w9WgXcQ", "kind": "music video, little to teach"},
+    {"video_id": "zSABTWqz-I0", "kind": "anime clip, little to teach"}
+  ],
+  "held_out": [
+    {"video_id": "Gx5qb1uHss4", "kind": "programming lecture, never used while writing the prompts"}
+  ]
+}

@@ -1,0 +1,21 @@
+# make burst on the fakes stack (fake Gemini enforces 5 calls/min), 2 workers
+b8457f13  burstc2d94b  COMPLETED                          1:51  Fake lecture burstc2d94b
+b78f9b82  burstf84af0  COMPLETED                          1:30  Fake lecture burstf84af0
+
+6 jobs, 6 completed; drained 1:51 after the first job was submitted.
+LLM answers to these jobs: 6 x 200 (gemini-3.5-flash-lite: 6)
+429s from the LLM: 0
+
+# same, 4 workers (make scale n=4, after the fix that keeps FAKE_APIS)
+
+job       video        status                   finished after  title
+b35d902d  burstcb3f7f  COMPLETED                          0:40  Fake lecture burstcb3f7f
+a7073d1c  burst0079f0  COMPLETED                          0:45  Fake lecture burst0079f0
+74778b02  burstba06cd  COMPLETED                          1:15  Fake lecture burstba06cd
+ba4b0989  burstfbb4d9  COMPLETED                          0:59  Fake lecture burstfbb4d9
+a1b1a313  burst82597b  COMPLETED                          2:12  Fake lecture burst82597b
+ebfc794e  bursta08612  COMPLETED                          1:29  Fake lecture bursta08612
+
+6 jobs, 6 completed; drained 2:13 after the first job was submitted.
+LLM answers to these jobs: 6 x 200 (gemini-3.8-flash: 6)
+429s from the LLM: 0

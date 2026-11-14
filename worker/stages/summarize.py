@@ -146,7 +146,11 @@ async def _candidate_images(
     detect: CutDetector,
     grab: Grabber,
 ) -> list[CandidateImage]:
-    """Candidate frames with their JPEG bytes, or [] (captions-only notes) if unavailable."""
+    """Candidate frames with their JPEG bytes, or [] (captions-only notes) if unavailable.
+
+    A retryable failure (YouTube refusing or throttling the preview) retries the stage while
+    attempts remain (D48): without candidates the model only guesses what each frame shows, so
+    its captions may not match the frames (C-B). The last attempt writes captions-only notes."""
     if source is None or ctx.settings.candidate_max <= 0:
         return []
     try:
@@ -162,6 +166,12 @@ async def _candidate_images(
         )
         return await asyncio.to_thread(_load_images, ctx.job_dir, candidates)
     except (VnaError, FrameGrabError, OSError) as exc:
+        if (
+            isinstance(exc, VnaError)
+            and exc.retryable
+            and ctx.message.attempt < ctx.settings.retry_max_attempts
+        ):
+            raise
         code = getattr(exc, "code", None) or type(exc).__name__
         ctx.log.warning("candidates_unavailable", reason=str(code), fallback="captions only")
         return []

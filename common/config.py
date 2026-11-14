@@ -7,7 +7,15 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 LlmProvider = Literal["gemini", "ollama", "fake"]
@@ -50,6 +58,13 @@ DEFAULT_LLM_CHAIN = (
     LlmModelSpec(model="gemini-3.8-flash", thinking="low", timeout_s=120),
     LlmModelSpec(model="gemini-3.5-flash-lite", thinking="medium", timeout_s=60),
 )
+# eval/judge.py (O-5): led by another model than the notes' first, so no model grades its own
+# notes first-hand, and the judge spends another daily quota than the pipeline.
+DEFAULT_EVAL_JUDGE_CHAIN = (
+    LlmModelSpec(model="gemini-3.8-flash", thinking="medium", timeout_s=180),
+    LlmModelSpec(model="gemini-3.6-flash", thinking="medium", timeout_s=120),
+    LlmModelSpec(model="gemini-3.5-flash-lite", thinking="medium", timeout_s=60),
+)
 # Settings replaced by LLM_CHAIN / LLM_STEP_DOWN_FROM_ATTEMPT (D36). Refused if still set, so a
 # stale .env cannot silently run a different chain.
 REPLACED_SETTINGS = {
@@ -85,6 +100,8 @@ class Settings(BaseSettings):
     # first model no worker has benched; see ARCHITECTURE §8.2 for the measurements behind it.
     # Timeouts are also sent as X-Server-Timeout, so Google itself gives up at that point.
     llm_chain: Annotated[tuple[LlmModelSpec, ...], NoDecode] = DEFAULT_LLM_CHAIN
+    # The LLM-as-judge of eval/judge.py, same format; not used by the pipeline.
+    eval_judge_chain: Annotated[tuple[LlmModelSpec, ...], NoDecode] = DEFAULT_EVAL_JUDGE_CHAIN
     # Earlier attempts wait out one 5xx/timeout through the delay queues (the model may recover);
     # from this attempt on, any 5xx/timeout steps down to the next model at once (D31, D36).
     llm_step_down_from_attempt: int = Field(default=3, ge=1)
@@ -234,21 +251,24 @@ class Settings(BaseSettings):
             raise ValueError(f"settings replaced in D36, remove them from .env: {replacements}")
         return data
 
-    @field_validator("llm_chain", mode="before")
+    @field_validator("llm_chain", "eval_judge_chain", mode="before")
     @classmethod
     def _parse_chain(cls, value: object) -> object:
         if isinstance(value, str):
             return tuple(LlmModelSpec.parse(entry) for entry in _split_csv(value))
         return value
 
-    @field_validator("llm_chain")
+    @field_validator("llm_chain", "eval_judge_chain")
     @classmethod
-    def _check_chain(cls, value: tuple[LlmModelSpec, ...]) -> tuple[LlmModelSpec, ...]:
+    def _check_chain(
+        cls, value: tuple[LlmModelSpec, ...], info: ValidationInfo
+    ) -> tuple[LlmModelSpec, ...]:
+        name = str(info.field_name).upper()
         models = [spec.model for spec in value]
         if not models:
-            raise ValueError("LLM_CHAIN needs at least one model:thinking:timeout_s")
+            raise ValueError(f"{name} needs at least one model:thinking:timeout_s")
         if len(set(models)) != len(models):
-            raise ValueError(f"LLM_CHAIN lists a model twice: {models}")
+            raise ValueError(f"{name} lists a model twice: {models}")
         return value
 
     @model_validator(mode="after")

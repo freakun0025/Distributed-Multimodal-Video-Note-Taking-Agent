@@ -1,0 +1,67 @@
+[PASS] A: over the limit -> rejected, never processed: 2 jobs rejected as longer than 1200 s, none reached the LLM; 33 succeeded, all at most 1200 s (7 stub-pipeline jobs of M1 not counted)
+
+Decision and Classification Trees, Clearly Explained!!!
+  job 7854a6cb-3eca-4d81-b293-fbffea2a1460 of 2026-11-14 13:42 UTC, _L39rN6gz7Y
+  [PASS] A: within the limit: 1088 s (limit 1200 s)
+  [PASS] B: every frame captioned: 6/6 with caption and reason
+  [PASS] B: frames are JPEGs ffmpeg decodes: 6/6 decoded
+  [PASS] B: real frame (matches the candidate): 6 frames, 0-2 bits from the candidate at their second (limit 12); other moments of the video: median 23 bits
+  [PASS] B: status and warnings agree: COMPLETED, 6/6 frames
+
+The History of the World in 20 Minutes
+  job 76636768-9405-4ef9-86e2-52df95ab3c58 of 2026-11-14 18:04 UTC, KnviRvdmFTc
+  [PASS] A: within the limit: 1181 s (limit 1200 s)
+  [PASS] B: every frame captioned: 6/6 with caption and reason
+  [PASS] B: frames are JPEGs ffmpeg decodes: 6/6 decoded
+  [PASS] B: real frame (matches the candidate): 6 frames, 0-4 bits from the candidate at their second (limit 12); other moments of the video: median 31 bits
+  [PASS] B: status and warnings agree: COMPLETED, 6/6 frames
+
+The Original Ramayana Is TOO Brutal to Adapt
+  job 7b56f29f-037c-4ce3-9b54-cde391e77caa of 2026-11-14 18:14 UTC, Vh4N3r1XQyw
+  [PASS] A: within the limit: 648 s (limit 1200 s)
+  [PASS] B: every frame captioned: 3/3 with caption and reason
+  [PASS] B: frames are JPEGs ffmpeg decodes: 3/3 decoded
+  [PASS] B: real frame (matches the candidate): 3 frames, 1-2 bits from the candidate at their second (limit 12); other moments of the video: median 19 bits
+  [PASS] B: status and warnings agree: COMPLETED, 3/3 frames
+
+Learn 97% Of Claude Code In Under 18 Minutes
+  job 9dd40ca9-e313-4561-8d4b-33fec6db050c of 2026-11-14 13:41 UTC, aXM56qJQT7Y
+  [PASS] A: within the limit: 1067 s (limit 1200 s)
+  [PASS] B: every frame captioned: 5/5 with caption and reason
+  [PASS] B: frames are JPEGs ffmpeg decodes: 5/5 decoded
+  [PASS] B: real frame (matches the candidate): 5 frames, 0-5 bits from the candidate at their second (limit 12); other moments of the video: median 36 bits
+  [PASS] B: status and warnings agree: COMPLETED, 5/5 frames
+
+Learn Java in 15 Minutes (seriously)
+  job 8c7017fd-4295-4337-9b7f-69564b30d906 of 2026-11-14 18:04 UTC, b5l5UodFzMo
+  [PASS] A: within the limit: 1190 s (limit 1200 s)
+  [PASS] B: every frame captioned: 6/6 with caption and reason
+  [PASS] B: frames are JPEGs ffmpeg decodes: 6/6 decoded
+  [PASS] B: real frame (matches the candidate): 6 frames, 1-11 bits from the candidate at their second (limit 12); other moments of the video: median 23 bits
+  [PASS] B: status and warnings agree: COMPLETED, 6/6 frames
+
+Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)
+  job d0c4b87a-a495-45a4-a580-a8303dfa2044 of 2026-11-14 18:04 UTC, dQw4w9WgXcQ
+  [PASS] A: within the limit: 213 s (limit 1200 s)
+  [PASS] B: every frame captioned: 3/3 with caption and reason
+  [PASS] B: frames are JPEGs ffmpeg decodes: 3/3 decoded
+  [PASS] B: real frame (matches the candidate): 3 frames, 0-0 bits from the candidate at their second (limit 12); other moments of the video: median 24 bits
+  [PASS] B: status and warnings agree: COMPLETED, 3/3 frames
+
+When You've Read All the Lorebooks | KONOSUBA - God's blessing on this wonderful world!
+  job dd5e1b08-e0d2-4556-b054-06caeabfef74 of 2026-11-14 18:04 UTC, zSABTWqz-I0
+  [PASS] A: within the limit: 128 s (limit 1200 s)
+  [PASS] B: every frame captioned: 3/3 with caption and reason
+  [PASS] B: frames are JPEGs ffmpeg decodes: 3/3 decoded
+  [PASS] B: real frame (matches the candidate): 3 frames, 0-2 bits from the candidate at their second (limit 12); other moments of the video: median 29 bits
+  [PASS] B: status and warnings agree: COMPLETED, 3/3 frames
+
+10 Important Python Concepts In 20 Minutes (held-out)
+  job 7ed56b34-dd6c-4be0-b791-27356edaffaf of 2026-11-14 08:43 UTC, Gx5qb1uHss4
+  [PASS] A: within the limit: 1129 s (limit 1200 s)
+  [PASS] B: every frame captioned: 6/6 with caption and reason
+  [PASS] B: frames are JPEGs ffmpeg decodes: 6/6 decoded
+  [PASS] B: real frame (matches the candidate): 6 frames, 2-6 bits from the candidate at their second (limit 12); other moments of the video: median 16 bits
+  [PASS] B: status and warnings agree: COMPLETED, 6/6 frames
+
+All constraint checks passed.

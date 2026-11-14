@@ -15,13 +15,18 @@ stage ?= EXTRACT_FRAMES
 jobs ?= 6
 since ?= 15
 args ?=
+ids ?=
+# The eval scripts run in a one-off worker container (database, /data volume, ffmpeg, LLM
+# settings), with eval/ mounted read-only: the images stay free of eval code.
+EVAL_RUN = $(COMPOSE) run --rm --no-deps -T -v "$(CURDIR)/eval:/app/eval:ro" worker python -m
 # The fakes service's control endpoint, published on the host by docker-compose.yml.
 FAKES ?= http://127.0.0.1:8090
 FAKES_PUT = curl -fsS -X PUT -H 'content-type: application/json'
 
 .DEFAULT_GOAL := help
 .PHONY: help up up-fakes up-gpu up-obs down logs migrate lint test test-ext itest scale \
-        fake-429 fake-frames fake-unavailable fake-reset fakes kill-worker burst burst-report \n        fernet-key
+        fake-429 fake-frames fake-unavailable fake-reset fakes kill-worker burst burst-report \
+        check-constraints judge bench-report fernet-key
 
 help: ## List commands
 	@grep -E '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-17s %s\n", $$1, $$2}'
@@ -63,8 +68,11 @@ test-ext: ## Extension unit tests (Node's built-in runner, no npm); skipped with
 itest: ## Integration tests against the fakes stack (make up-fakes first); extra pytest args: args="-k dlq"
 	$(UV) run pytest -m integration tests/integration $(args)
 
-scale: ## Run n workers, e.g. make scale n=4
-	$(COMPOSE) up -d --no-recreate --scale worker=$(n)
+# New workers get the running ones' FAKE_APIS, so scaling the fakes stack never adds workers
+# that call the real APIs (found by the CP12 throughput run).
+scale: ## Run n workers, e.g. make scale n=4 (same real or fake APIs as the running workers)
+	FAKE_APIS=$$($(COMPOSE) exec -T worker printenv FAKE_APIS 2>/dev/null || echo false) \
+	  $(COMPOSE) up -d --no-recreate --scale worker=$(n)
 
 fernet-key: ## Print a new TOKEN_ENCRYPTION_KEY
 	@$(UV) run python -m common.crypto
@@ -96,3 +104,12 @@ burst: ## Queue resilience (Spec §9), fakes stack: jobs=6 jobs for different vi
 
 burst-report: ## Jobs submitted in the last since=15 minutes (e.g. Take Notes on several videos): drain time, LLM 429s
 	$(UV) run python -m chaos.burst report --since $(since)
+
+check-constraints: ## Constraint A/B checks (no LLM) on the newest job of each video in eval/videos.json, or ids="<job id> ..."
+	$(EVAL_RUN) eval.check_constraints $(ids)
+
+judge: ## LLM-as-judge (one LLM request per job) on the same jobs, or ids="<job id> ..."
+	$(EVAL_RUN) eval.judge $(ids)
+
+bench-report: ## Per-stage times of the newest job of each eval video, or ids="<job id> ..."
+	$(EVAL_RUN) eval.benchmark $(ids)

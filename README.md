@@ -24,8 +24,10 @@ The gateway only validates and enqueues; all pipeline work happens in the worker
 3. [REST API](#rest-api)
 4. [Configuration](#configuration) — every environment variable
 5. [Demo script for grading](#demo-script-for-grading) — every Spec §6 failure, the burst, a kill
-6. [Design choices](#design-choices) — and why
-7. [Development](#development) — tests and the `make` commands
+6. [Evaluation and measured results](#evaluation-and-measured-results) — latency, burst, crash
+   recovery, Constraints A and B, LLM-as-judge
+7. [Design choices](#design-choices) — and why
+8. [Development](#development) — tests and the `make` commands
 
 ## Quick start
 
@@ -164,6 +166,7 @@ default.
 | `LLM_STEP_DOWN_FROM_ATTEMPT`, `LLM_MODEL_STRIKES`, `LLM_STRIKE_WINDOW_S`, `LLM_MODEL_COOLDOWN_S`, `LLM_QUOTA_RESET_TZ` | `3`, `2`, `600`, `600`, `America/Los_Angeles` | When the chain moves to the next model, and for how long a model is benched |
 | `LLM_CHUNK_CHARS`, `LLM_MAX_REPAIRS`, `LLM_IMAGE_RESOLUTION` | auto, `1`, `medium` | Transcript chunk size (long transcripts are split and merged in order), re-prompts for invalid JSON, image detail |
 | `OLLAMA_URL`, `OLLAMA_MODEL` | `http://ollama:11434`, `qwen3:8b` | Only with `LLM_PROVIDER=ollama` |
+| `EVAL_JUDGE_CHAIN` | `gemini-3.8-flash:medium:180,gemini-3.6-flash:medium:120,gemini-3.5-flash-lite:medium:60` | Only for `make judge` (the LLM-as-judge), same format as `LLM_CHAIN`; led by another model than the notes' first |
 
 **Other rate limits**
 
@@ -204,8 +207,9 @@ From a WSL/Linux/macOS shell in the repository. `make help` lists every command.
 rabbitmq, redis, 2 workers). RabbitMQ's UI: <http://localhost:15672> (user and password `vna`)
 shows `jobs.work`, the delay queues `jobs.retry.10s/30s/90s` and `jobs.dlq`.
 
-**1. A real job.** Take Notes on a lecture of 15–20 minutes. Its stage timings are in the worker
-logs (`make logs s=worker`).
+**1. A real job.** Take Notes on a lecture of 15–20 minutes. `make bench-report ids=<job id>`
+prints how long it waited and how long each stage took (the job ID is in `docker compose logs
+gateway`, or `make bench-report` for the evaluation videos).
 
 **2. The four Spec §6 failures, on demand.** The 429 and frame switches live in the fake APIs, so
 run `make up-fakes` first (`make up` brings the real APIs back; the Notion page is then in the
@@ -220,7 +224,9 @@ fake service, and the popup still shows every status).
 
 `make fake-reset` makes every fake API work again; `make fakes` shows the switches.
 Without `make`: `docker kill vna-worker-1` kills a worker by hand (`docker start vna-worker-1`
-brings it back), and `docker compose up -d --scale worker=1` / `=3` stops or adds workers.
+brings it back), and `docker compose up -d --scale worker=1` / `=3` stops or adds workers (on
+the fakes stack `FAKE_APIS=true docker compose up -d --no-recreate --scale worker=3`, or else
+the new workers call the real APIs; `make scale n=3` does this for you).
 
 **3. Burst (Spec §9 queue resilience).** Click Take Notes on several different videos in a row,
 then run `make burst-report since=10`: each job's status and time, when the queue drained, and
@@ -232,6 +238,37 @@ day (20 per Flash model), so on the real stack keep enough of the day's quota fo
 **4. Longer than 20 minutes.** Take Notes on a 25-minute video → `FAILED`, "This video is longer
 than 20 minutes" (on fakes: `curl -X PUT localhost:8090/_control/youtube -H 'content-type:
 application/json' -d '{"duration":1500}'`).
+
+## Evaluation and measured results
+
+Measured on 2026-11-14 on one laptop (i7-12700H, 16 GB, Docker Desktop), 2 workers, Gemini's
+free tier. Raw outputs: [`eval/results/2026-11-14/`](eval/results/2026-11-14/). Nothing here is
+estimated.
+
+| What (Spec §9) | Result |
+| --- | --- |
+| End-to-end latency near 20 min | A 19:30 video alone: **2:09** from the click to the page (transcript 7 s, notes 95 s incl. one 10 s retry, frames 18 s, publish 10 s). In a burst of 5–6 jobs on 2 workers each job took 3–7 min, waiting for a free worker included |
+| Queue resilience (burst) | 6 different videos submitted back to back, real YouTube and Gemini: **6/6 completed, drained in 7:12, 0 LLM 429s** (6 × 200, 1 × 503 retried). On the fakes stack (fake Gemini enforces 5 calls/min): 2 workers 1:51, 4 workers 2:13, 0 429s both times: the LLM's rate limit, not the worker count, sets a burst's pace |
+| Fault tolerance | `make kill-worker stage=PUBLISH` right after the Notion page was created: the message reached the other worker **0.17 s** after the SIGKILL, the job finished 8.1 s after it, **one page**. DLQ: an impossible video ID was retried 10/30/90 s and dead-lettered after 144 s |
+| Constraint A | A real 45:38 lecture: `FAILED VIDEO_TOO_LONG` in seconds, no LLM call. Over every job in the database: none above 20 minutes reached the LLM, every success is at most 20 minutes |
+| Constraint B | 8 videos (7 fixed + 1 held-out, `eval/videos.json`), 38 frames: every frame has a caption and a reason, decodes as a JPEG, and is the picture the model saw at that second (difference hash 0–11 bits of 64 from it; other moments of the same video: median 16–36 bits) |
+| LLM-as-judge | 37 of 38 captions describe what their picture shows; faithfulness, coverage, structure and questions 5/5 on all 8 videos in the last round. The miss (Java 7:26: "the console shows 5" while it still shows an older "Hello, World!") is fixed in the prompt since; the last round was judged mostly by Flash-Lite, as 3.6 Flash's daily quota was spent and 3.8 Flash was overloaded |
+
+Run them yourself (they read the files each job keeps on the `/data` volume, the same ones its
+Notion page was built from, and run in a one-off worker container):
+
+```bash
+make check-constraints   # Constraint A over every job; Constraint B per job (no LLM)
+make judge               # LLM-as-judge, one request per job (EVAL_JUDGE_CHAIN, ~1 request each)
+make bench-report        # per-stage times of each job, from its events
+# each takes ids="<job id> ..." to look at other jobs
+```
+
+What the evaluation found and changed (D48): two burst jobs had lost their candidate frames to a
+refused YouTube download and written captions from the transcript alone, so SUMMARIZE now
+retries that download first; and the caption rules now say to describe half-typed code as it
+stands, to describe what is on screen before a result appears rather than the announced result,
+and to name a person only when the frame or the words at that moment say who it is.
 
 ## Design choices
 
