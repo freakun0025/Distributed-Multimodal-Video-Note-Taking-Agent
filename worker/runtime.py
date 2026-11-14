@@ -3,12 +3,20 @@
 Invariant 3: a message is acked only after its stage output is durable (artefact + checkpoint
 row) and the next message (or retry / DLQ copy) is publisher-confirmed. Anything that fails
 before that point leaves the message unacked, so RabbitMQ redelivers it.
+
+Two guards around a stage (CP10): a watchdog stops a stage still running after STAGE_TIMEOUT_S
+and retries it, so a hung worker can't sit on its message; and PUBLISH runs under the job's
+advisory lock, so two deliveries of one job (a redelivery while the first worker still lives)
+never publish at the same time: the second waits in the shortest delay queue, same attempt.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
+from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import Any, Protocol
+from uuid import UUID
 
 from pydantic import ValidationError
 
@@ -26,7 +34,7 @@ from common.state import (
     is_terminal,
     next_stage,
 )
-from worker.context import JobRecord, StageContext, StageFn
+from worker.context import JobRecord, StageContext, StageFn, StageOutcome
 from worker.llm.health import ModelHealth
 from worker.store import JobStore
 
@@ -35,6 +43,9 @@ log = get_logger()
 # x-delivery-count: set by quorum queues on messages redelivered after a consumer crash,
 # channel close or reject — not after a nack (RabbitMQ 4.3, ARCHITECTURE §6.1).
 DELIVERY_COUNT_HEADER = "x-delivery-count"
+# Stages that run under the job's advisory lock: only PUBLISH has an outside effect (the
+# Notion page) that two concurrent runs could duplicate (ARCHITECTURE §8.4).
+LOCKED_STAGES: frozenset[Stage] = frozenset({Stage.PUBLISH})
 
 
 class IncomingMessage(Protocol):
@@ -137,12 +148,41 @@ class Runtime:
             await incoming.ack()
             return
 
-        if not await self._store.start_stage(job.id, message.stage, message.attempt, self._worker):
-            log.info("message_dropped", reason="stale", status=job.status)
-            await incoming.ack()
-            return
+        async with self._stage_lock(job.id, message.stage) as free:
+            if not free:
+                await self._wait_for_other_worker(message, incoming)
+                return
+            if not await self._store.start_stage(
+                job.id, message.stage, message.attempt, self._worker
+            ):
+                log.info("message_dropped", reason="stale", status=job.status)
+                await incoming.ack()
+                return
+            await self._run_stage(job, message, incoming)
 
-        await self._run_stage(job, message, incoming)
+    def _stage_lock(self, job_id: UUID, stage: Stage) -> AbstractAsyncContextManager[bool]:
+        if stage in LOCKED_STAGES:
+            return self._store.publish_lock(job_id)
+        return nullcontext(True)
+
+    async def _wait_for_other_worker(
+        self, message: StageMessage, incoming: IncomingMessage
+    ) -> None:
+        """Another worker is publishing this job: look again after the shortest delay. Same
+        attempt (waiting is not failing); the other worker's watchdog bounds the wait."""
+        delay = min(self._settings.retry_delays)
+        await self._publisher.publish(message, retry_routing_key(delay))
+        log.info("stage_busy_elsewhere", delay_s=delay)
+        busy = RetryableError(
+            ErrorCode.PUBLISH_IN_PROGRESS, "another worker is publishing this job"
+        )
+        try:
+            await self._store.record_retry(
+                message.job_id, message.stage, message.attempt, busy, delay, self._worker
+            )
+        except Exception as exc:  # display-only state; the message itself is confirmed
+            log.warning("retry_not_recorded", error=type(exc).__name__)
+        await incoming.ack()
 
     async def _run_stage(
         self, job: JobRecord, message: StageMessage, incoming: IncomingMessage
@@ -157,10 +197,13 @@ class Runtime:
             report_progress=lambda fraction: self._store.report_progress(job.id, stage, fraction),
             limiter=self._limiter,
             model_health=self._model_health,
+            save_notion_page=lambda page_id, url: self._store.save_notion_page(
+                job.id, page_id, url
+            ),
         )
         log.info("stage_started")
         try:
-            outcome = await self._stages[stage](ctx)
+            outcome = await self._watched(stage, ctx)
         except RetryableError as exc:
             await self._route_failure(message, incoming, exc)
             return
@@ -195,6 +238,24 @@ class Runtime:
             # Another delivery checkpointed first; it (or its redelivery) publishes the next one.
             log.info("stage_completed_elsewhere")
         await incoming.ack()
+
+    async def _watched(self, stage: Stage, ctx: StageContext) -> StageOutcome:
+        """Run the stage; past STAGE_TIMEOUT_S cancel it and raise a retryable STAGE_TIMEOUT.
+
+        Cancelling is safe: every stage is idempotent and resumes from what it saved. Work in a
+        thread (yt-dlp, ffmpeg) cannot be cancelled and finishes on its own, bounded by its
+        own timeout."""
+        limit = self._settings.stage_timeout_s
+        try:
+            async with asyncio.timeout(limit) as watchdog:
+                return await self._stages[stage](ctx)
+        except TimeoutError:
+            if not watchdog.expired():
+                raise  # a timeout inside the stage, not the watchdog: handled like any error
+            log.error("stage_timed_out", limit_s=limit)
+            raise RetryableError(
+                ErrorCode.STAGE_TIMEOUT, f"{stage} was still running after {limit:g} s"
+            ) from None
 
     async def _publish_next(self, message: StageMessage) -> None:
         following = next_stage(message.stage)

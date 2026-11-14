@@ -2,7 +2,9 @@
 
 1. Find or create the page: the job's saved page, else a child page of the destination whose
    title ends with the job tag (listing the parent's children, never the search API), else a
-   new empty page. A retried publish therefore never makes a second page.
+   new empty page; the page is saved on the job right away. A retried publish therefore never
+   makes a second page, and the runtime's per-job lock keeps two workers from publishing at
+   once.
 2. Build the block list deterministically (worker/notion_page.py) and count the blocks already
    on the page (k); append blocks[k:] in batches, uploading each batch's frames just before the
    batch (Notion archives an upload not attached within the hour), so a crash mid-append resumes
@@ -107,9 +109,13 @@ async def _find_or_create(ctx: StageContext, notion: NotionApi, meta: VideoMeta)
     for page_id, title in await notion.child_pages(parent):
         if title.endswith(tag):
             ctx.log.info("notion_page_found")  # a previous attempt created it
-            return await notion.page(page_id)
-    page = await notion.create_page(parent, page_title(meta.title, ctx.job.id))
-    ctx.log.info("notion_page_created")
+            page = await notion.page(page_id)
+            break
+    else:
+        page = await notion.create_page(parent, page_title(meta.title, ctx.job.id))
+        ctx.log.info("notion_page_created")
+    # Saved before any block is appended (F-19): a retry reuses it without listing the parent.
+    await ctx.save_notion_page(page.id, page.url)
     return page
 
 

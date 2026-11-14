@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import re
+import threading
+import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,7 +33,7 @@ from youtube_transcript_api import (
 )
 from yt_dlp.networking.exceptions import HTTPError as YtDlpHTTPError
 from yt_dlp.networking.exceptions import TransportError as YtDlpTransportError
-from yt_dlp.utils import DownloadError, ExtractorError, GeoRestrictedError
+from yt_dlp.utils import DownloadCancelled, DownloadError, ExtractorError, GeoRestrictedError
 
 from common.config import Settings
 from common.errors import (
@@ -53,6 +55,9 @@ if TYPE_CHECKING:
 API = ExternalApi.YOUTUBE
 _MESSAGE_MAX_CHARS = 200
 _PROGRESS_STEP = 0.05  # report download progress in 5% steps
+# A stopped download ends at its next data block, or at the latest when a stalled read times
+# out and its one in-place retry times out too: wait that long for it before giving up.
+_STOP_WAIT_SOCKET_TIMEOUTS = 3
 log = get_logger()
 
 ProgressFn = Callable[[float], Awaitable[None]]
@@ -73,6 +78,12 @@ _UNAVAILABLE_HINTS = (
     "not available in your country",
     "copyright",
 )
+
+
+def _ignore_result(task: asyncio.Future[Path]) -> None:
+    """A download given up on still ends with a result or an error nobody awaits; consume it."""
+    if not task.cancelled():
+        task.exception()
 
 
 def watch_url(video_id: str) -> str:
@@ -115,10 +126,18 @@ class TranscriptTrack(Protocol):
     def is_generated(self) -> bool: ...
 
 
+class _DownloadStopped(DownloadCancelled):
+    """Raised from the progress hook to stop yt-dlp mid-download. yt-dlp closes the `.part` file
+    (kept, so the next attempt resumes it) and lets this through; `__cause__` is the VnaError."""
+
+
 class YouTubeClient:
-    def __init__(self, limiter: Limiter, timeout_s: float) -> None:
+    def __init__(
+        self, limiter: Limiter, timeout_s: float, *, download_timeout_s: float | None = None
+    ) -> None:
         self._limiter = limiter
-        self._timeout_s = timeout_s
+        self._timeout_s = timeout_s  # per socket read
+        self._download_timeout_s = download_timeout_s  # per download; None = no limit
 
     async def video_info(self, video_id: str) -> VideoInfo:
         """Title, duration and live status, without downloading anything."""
@@ -134,12 +153,20 @@ class YouTubeClient:
     async def download_video(
         self, video_id: str, dest_dir: Path, *, name: str, max_height: int, progress: ProgressFn
     ) -> Path:
-        """Download once into `dest_dir/<name>.<ext>` (resumes a partial file after a crash)."""
+        """Download once into `dest_dir/<name>.<ext>` (resumes a partial file after a crash).
+
+        A download still running after YOUTUBE_DOWNLOAD_TIMEOUT_S (YouTube throttles some streams
+        to a few dozen kB/s) stops as UPSTREAM_TIMEOUT; the partial file stays, so the next
+        attempt resumes it. If the stage is cancelled (the stage watchdog), yt-dlp is stopped at
+        its next data block and awaited, so a retry never writes the `.part` file this download
+        is still writing.
+        """
         if (done := finished_download(dest_dir, name)) is not None:
             return done
         await self._limiter.acquire(API)
         loop = asyncio.get_running_loop()
         reports: list[concurrent.futures.Future[None]] = []
+        stop = threading.Event()
 
         async def forward(fraction: float) -> None:
             await progress(fraction)
@@ -147,27 +174,57 @@ class YouTubeClient:
         def report(fraction: float) -> None:  # called from yt-dlp's thread
             reports.append(asyncio.run_coroutine_threadsafe(forward(fraction), loop))
 
-        try:
-            return await asyncio.to_thread(
-                self._download, video_id, dest_dir, name, max_height, report
+        download = asyncio.ensure_future(
+            asyncio.to_thread(
+                self._download, watch_url(video_id), dest_dir, name, max_height, report, stop
             )
+        )
+        try:
+            # shield: cancelling this stage must not abandon the thread, only ask it to stop.
+            return await asyncio.shield(download)
+        except asyncio.CancelledError:
+            stop.set()
+            await asyncio.wait({download}, timeout=_STOP_WAIT_SOCKET_TIMEOUTS * self._timeout_s)
+            if not download.done():
+                log.warning("video_download_still_stopping", name=name)
+            download.add_done_callback(_ignore_result)
+            raise
         finally:
             await asyncio.gather(*(asyncio.wrap_future(f) for f in reports), return_exceptions=True)
 
     def _download(
         self,
-        video_id: str,
+        url: str,
         dest_dir: Path,
         name: str,
         max_height: int,
         report: Callable[[float], None],
+        stop: threading.Event,
     ) -> Path:
         dest_dir.mkdir(parents=True, exist_ok=True)
         reported = [0.0]
+        limit = self._download_timeout_s
+        deadline = None if limit is None else time.monotonic() + limit
 
         def hook(status: dict[str, Any]) -> None:
+            # yt-dlp calls this after every block it writes, so a stop takes effect promptly
+            # while data flows; a stalled stream ends at the socket timeout anyway. A finished
+            # download is kept, whatever the clock says.
+            if status.get("status") != "downloading":
+                return
+            error: VnaError | None = None
+            if stop.is_set():
+                error = RetryableError(ErrorCode.STAGE_TIMEOUT, "the stage was stopped", api=API)
+            elif deadline is not None and time.monotonic() >= deadline:
+                error = RetryableError(
+                    ErrorCode.UPSTREAM_TIMEOUT,
+                    f"the video download took longer than {limit:g} s",
+                    api=API,
+                )
+            if error is not None:
+                raise _DownloadStopped(error.message) from error
             total = status.get("total_bytes") or status.get("total_bytes_estimate")
-            if status.get("status") != "downloading" or not total:
+            if not total:
                 return
             fraction = min(status.get("downloaded_bytes", 0) / total, 1.0)
             if fraction - reported[0] >= _PROGRESS_STEP:
@@ -193,7 +250,7 @@ class YouTubeClient:
         }
         try:
             with yt_dlp.YoutubeDL(options) as ydl:
-                ydl.extract_info(watch_url(video_id), download=True)
+                ydl.extract_info(url, download=True)
         except Exception as exc:
             raise classify_ytdlp_error(exc) from exc
         path = finished_download(dest_dir, name)
@@ -243,8 +300,15 @@ def video_source(settings: Settings, limiter: Limiter) -> YouTubeClient | FakesY
     if settings.fake_apis:
         from worker.clients.fakes import FakesYouTubeClient
 
-        return FakesYouTubeClient(limiter, settings.fakes_url, settings.youtube_timeout_s)
-    return YouTubeClient(limiter, settings.youtube_timeout_s)
+        return FakesYouTubeClient(
+            limiter,
+            settings.fakes_url,
+            settings.youtube_timeout_s,
+            download_timeout_s=settings.youtube_download_timeout_s,
+        )
+    return YouTubeClient(
+        limiter, settings.youtube_timeout_s, download_timeout_s=settings.youtube_download_timeout_s
+    )
 
 
 def video_info_from_ytdlp(video_id: str, info: dict[str, Any]) -> VideoInfo:

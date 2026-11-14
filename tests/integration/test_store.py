@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from common.db import job_events, jobs, stage_checkpoints
 from common.errors import ErrorCode, ExternalApi, RetryableError, WarningCode
 from common.models import ErrorInfo, JobWarning
-from common.state import JobStatus, Stage
+from common.state import JobStatus, Stage, transition
 from tests.integration.conftest import JobRows, advance
 from worker.context import StageOutcome
 from worker.store import PostgresJobStore
@@ -168,3 +168,47 @@ async def test_dead_lettering_records_status_error_and_event(
 
 async def test_loading_an_unknown_job_returns_none(engine: AsyncEngine) -> None:
     assert await PostgresJobStore(engine).load(uuid4()) is None
+
+
+async def test_only_one_worker_at_a_time_holds_a_jobs_publish_lock(
+    engine: AsyncEngine, job_rows: JobRows
+) -> None:
+    worker_a, worker_b = PostgresJobStore(engine), PostgresJobStore(engine)
+    job_id, other_job = await job_rows.create(), await job_rows.create()
+    async with worker_a.publish_lock(job_id) as a_has_it:
+        assert a_has_it
+        async with worker_b.publish_lock(job_id) as b_has_it:
+            assert not b_has_it  # a redelivery while A still publishes: B must wait
+        async with worker_b.publish_lock(other_job) as b_other:
+            assert b_other  # another job's lock is independent
+    async with worker_b.publish_lock(job_id) as b_after:
+        assert b_after  # released when A's block ended
+
+
+async def test_a_publish_lock_is_released_when_the_stage_fails(
+    engine: AsyncEngine, job_rows: JobRows
+) -> None:
+    store = PostgresJobStore(engine)
+    job_id = await job_rows.create()
+    with pytest.raises(RuntimeError):
+        async with store.publish_lock(job_id) as locked:
+            assert locked
+            raise RuntimeError("stage crashed")
+    async with store.publish_lock(job_id) as again:
+        assert again
+
+
+async def test_the_notion_page_is_saved_while_the_job_is_publishing(
+    engine: AsyncEngine, job_rows: JobRows
+) -> None:
+    store = PostgresJobStore(engine)
+    job_id = await job_rows.create()
+    async with engine.begin() as conn:
+        await advance(conn, job_id, JobStatus.EXTRACTING_FRAMES)
+    await store.save_notion_page(job_id, "too-early", "https://notion.so/too-early")
+    assert (await _row(engine, job_id))["notion_page_id"] is None  # not publishing yet
+    async with engine.begin() as conn:  # one step on, through transition() as always
+        assert await transition(conn, job_id, JobStatus.PUBLISHING, stage=Stage.PUBLISH, attempt=1)
+    await store.save_notion_page(job_id, "page-1", "https://notion.so/page-1")
+    row = await _row(engine, job_id)
+    assert (row["notion_page_id"], row["notion_page_url"]) == ("page-1", "https://notion.so/page-1")

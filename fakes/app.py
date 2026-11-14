@@ -8,6 +8,9 @@ The `/_control/*` switches reproduce every Spec §6 failure on demand (CP9): the
 one API answer an error (429 by default, with the real API's error body, optional Retry-After),
 every video is private, or the frames download is cut short or black. The worker's real clients
 classify these answers exactly as they classify the real APIs' (`make fake-429` etc.).
+
+Like Gemini's free tier, the fake LLM answers 429 to a model's call past FAKE_LLM_RPM in the
+last 60 s (CP11), so "a burst drains with zero LLM 429s" is measured against a real limit.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ import asyncio
 import json
 import math
 import re
+import time
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -50,6 +54,9 @@ PREVIEW_MAX_HEIGHT = 480
 # Served over about this long, like a real download, so EXTRACT_FRAMES has an observable
 # window (the kill-a-worker test waits for it).
 VIDEO_STREAM_SECONDS = 4.0
+# The captions take about this long, like a real fetch, so TRANSCRIBE has an observable window
+# too (the kill-a-worker test kills a worker in every stage, CP10).
+CAPTIONS_SECONDS = 2.0
 _VIDEO_CHUNK = 256 * 1024
 # yt-dlp's message for a private video (the real client classifies it VIDEO_UNAVAILABLE, D12).
 PRIVATE_VIDEO = "Private video. Sign in if you've been granted access to this video"
@@ -73,6 +80,13 @@ _unavailable_models: set[str] = set()
 # Every generateContent call since the last switch: model and HTTP status, oldest first.
 _llm_calls: list[dict[str, Any]] = []
 HIGH_DEMAND = "This model is currently experiencing high demand. Please try again later."
+# Calls a model answers per 60 s before it answers 429, like Gemini's per-minute quota:
+# gemini-3.8-flash and gemini-3.6-flash allow 5 on the free tier (ARCHITECTURE §9). 0 = no limit.
+FAKE_LLM_RPM = 5
+RPM_WINDOW_S = 60.0
+_llm_rpm = FAKE_LLM_RPM
+_llm_served: dict[str, deque[float]] = {}  # model -> monotonic times of answered calls
+_monotonic = time.monotonic  # replaced in unit tests to move the minute on
 
 
 class FaultSwitch(BaseModel):
@@ -205,6 +219,7 @@ def _switches() -> dict[str, Any]:
         },
         "youtube": dict(_youtube),
         "llm_unavailable": sorted(_unavailable_models),
+        "llm_rpm": _llm_rpm,
     }
 
 
@@ -228,12 +243,16 @@ async def switches() -> dict[str, Any]:
 
 @app.post("/_control/reset")
 async def reset() -> dict[str, Any]:
-    """Every API works again and the call log is empty (the Notion workspace is kept)."""
+    """Every API works again and the call log is empty (the Notion workspace is kept); the LLM
+    is back to FAKE_LLM_RPM with an empty minute."""
+    global _llm_rpm
     _faults.clear()
     _youtube.update(_YOUTUBE_DEFAULTS)
     _unavailable_models.clear()
     _llm_calls.clear()
     _calls.clear()
+    _llm_rpm = FAKE_LLM_RPM
+    _llm_served.clear()
     return _switches()
 
 
@@ -244,11 +263,34 @@ async def calls(api: Api | None = None) -> list[dict[str, Any]]:
 
 @app.put("/_control/llm")
 async def control_llm(body: dict[str, Any]) -> dict[str, Any]:
-    """Set the models that answer 503 (an empty list: all answer) and clear the call log."""
+    """Set the models that answer 503 (an empty list: all answer) and clear the call log;
+    `rpm` (optional) sets the per-model calls per minute (0: no limit)."""
+    global _llm_rpm
     _unavailable_models.clear()
     _unavailable_models.update(body.get("unavailable", []))
     _llm_calls.clear()
-    return {"unavailable": sorted(_unavailable_models)}
+    if "rpm" in body:
+        rpm = body["rpm"]
+        if not isinstance(rpm, int) or isinstance(rpm, bool) or rpm < 0:
+            raise HTTPException(status_code=422, detail="rpm must be an integer >= 0")
+        _llm_rpm = rpm
+        _llm_served.clear()
+    return {"unavailable": sorted(_unavailable_models), "rpm": _llm_rpm}
+
+
+def _over_rpm(model: str) -> int | None:
+    """Seconds until `model` may be called again when its last minute is full, else None (and
+    the call counts toward the minute)."""
+    if _llm_rpm <= 0:
+        return None
+    now = _monotonic()
+    served = _llm_served.setdefault(model, deque())
+    while served and now - served[0] >= RPM_WINDOW_S:
+        served.popleft()
+    if len(served) >= _llm_rpm:
+        return max(1, math.ceil(RPM_WINDOW_S - (now - served[0])))
+    served.append(now)
+    return None
 
 
 @app.get("/_control/llm/calls")
@@ -282,6 +324,7 @@ async def youtube_video(video_id: str) -> dict[str, Any] | JSONResponse:
 async def youtube_captions(video_id: str) -> dict[str, Any] | JSONResponse:
     if _youtube["unavailable"]:
         return _private()
+    await asyncio.sleep(CAPTIONS_SECONDS)
     segments = [
         {
             "start": float(start),
@@ -332,6 +375,9 @@ async def generate_content(
         _llm_calls.append({"model": model, "status": 503})
         error = {"code": 503, "message": HIGH_DEMAND, "status": "UNAVAILABLE"}
         return JSONResponse(status_code=503, content={"error": error})
+    if (wait_s := _over_rpm(model)) is not None:
+        _llm_calls.append({"model": model, "status": 429})
+        return JSONResponse(status_code=429, content=_gemini_error(429, "", wait_s))
     _llm_calls.append({"model": model, "status": 200})
     body = await request.json()
     prompt = "\n".join(

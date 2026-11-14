@@ -17,7 +17,7 @@ from typing import Any
 
 import httpx
 
-from common.errors import VnaError, classify_exception, classify_http
+from common.errors import ErrorCode, RetryableError, VnaError, classify_exception, classify_http
 from common.limiter import Limiter
 from common.models import Transcript, TranscriptSegment
 from worker.clients.youtube import (
@@ -43,11 +43,14 @@ class FakesYouTubeClient:
         base_url: str,
         timeout_s: float,
         http_client: httpx.AsyncClient | None = None,
+        *,
+        download_timeout_s: float | None = None,
     ) -> None:
         self._limiter = limiter
         self._base_url = base_url
         self._timeout_s = timeout_s
         self._http_client = http_client
+        self._download_timeout_s = download_timeout_s  # per download; None = no limit
 
     async def video_info(self, video_id: str) -> VideoInfo:
         data = await self._get(f"/youtube/videos/{video_id}")
@@ -78,6 +81,7 @@ class FakesYouTubeClient:
         url = f"{self._base_url}/youtube/videos/{video_id}/video"
         try:
             async with (
+                asyncio.timeout(self._download_timeout_s),
                 self._http() as http,
                 http.stream("GET", url, params={"height": max_height}) as response,
             ):
@@ -98,6 +102,13 @@ class FakesYouTubeClient:
             os.replace(part, final)
         except VnaError:
             raise
+        except TimeoutError:
+            limit = self._download_timeout_s
+            raise RetryableError(
+                ErrorCode.UPSTREAM_TIMEOUT,
+                f"the video download took longer than {limit:g} s",
+                api=API,
+            ) from None
         except Exception as exc:
             raise classify_exception(API, exc) from exc
         finally:

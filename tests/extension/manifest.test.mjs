@@ -66,3 +66,14 @@ test("host permissions cover the default gateway url", () => {
   const gateway = new URL(config.defaultGatewayUrl);
   assert.ok(manifest.host_permissions.includes(`${gateway.protocol}//${gateway.hostname}/*`));
 });
+
+test("a page that hides elements with the hidden attribute keeps them hidden whatever their class", () => {
+  // .notion sets display: inline-block, which beats the browser's [hidden] rule: View in Notion
+  // showed on running jobs with no page (seen in Brave, 2026-11-14).
+  for (const page of ["popup", "options"]) {
+    const html = readRepoFile(`extension/${page}.html`);
+    if (!/\shidden[\s>]/.test(html)) continue;
+    const css = readRepoFile(`extension/${page}.css`);
+    assert.match(css, /\[hidden\]\s*\{\s*display:\s*none\s*!important;?\s*\}/, `${page}.css`);
+  }
+});

@@ -112,12 +112,20 @@ class Settings(BaseSettings):
     youtube_burst: float = Field(default=2, ge=1)
     # Per-request socket timeout for yt-dlp and youtube-transcript-api (neither has one by default).
     youtube_timeout_s: float = Field(default=30, gt=0)
+    # Whole-download limit (a video for frames or a preview for candidates). YouTube throttles
+    # some streams to a few dozen kB/s; past this the download stops as UPSTREAM_TIMEOUT and the
+    # next attempt resumes the partial file (frames publish without images once the budget is
+    # spent, F-20). Must stay below STAGE_TIMEOUT_S.
+    youtube_download_timeout_s: float = Field(default=300, gt=0)
     limiter_max_wait_s: float = Field(default=20, ge=0)
     redis_timeout_s: float = Field(default=2, gt=0)
 
     # Retries / DLQ / outbox
     retry_max_attempts: int = Field(default=4, ge=1)
     retry_delays: Annotated[list[int], NoDecode] = Field(default_factory=lambda: [10, 30, 90])
+    # Stage watchdog: a stage still running after this is stopped and retried (STAGE_TIMEOUT),
+    # so a hung worker can't hold its message. Below RabbitMQ's 30 min consumer timeout.
+    stage_timeout_s: float = Field(default=900, gt=0)
     outbox_timeout_s: int = Field(default=300, gt=0)
     outbox_sweep_interval_s: float = Field(default=30, gt=0)
     broker_publish_timeout_s: float = Field(default=5, gt=0)
@@ -247,6 +255,14 @@ class Settings(BaseSettings):
     def _check_questions(self) -> Settings:
         if self.notes_questions_min > self.notes_questions_max:
             raise ValueError("NOTES_QUESTIONS_MIN must not exceed NOTES_QUESTIONS_MAX")
+        return self
+
+    @model_validator(mode="after")
+    def _check_download_timeout(self) -> Settings:
+        # The stage's own handling (resume, publish without frames) must get to run before the
+        # watchdog stops the whole stage.
+        if self.youtube_download_timeout_s >= self.stage_timeout_s:
+            raise ValueError("YOUTUBE_DOWNLOAD_TIMEOUT_S must be below STAGE_TIMEOUT_S")
         return self
 
     @field_validator("transcript_langs", mode="before")

@@ -63,14 +63,22 @@ def make_context(
     model_health: MemoryModelHealth | None = None,
     attempt: int = 1,
     duration_sec: int | None = None,
+    saved_pages: list[tuple[str, str]] | None = None,
+    notion_page: tuple[str, str] | None = None,
     **settings: Any,
 ) -> StageContext:
-    """A StageContext for one stage of a fresh job, artefacts under `tmp_path`."""
+    """A StageContext for one stage of a fresh job, artefacts under `tmp_path`. `saved_pages`
+    collects what the stage saves through `save_notion_page`; `notion_page` is (id, url) already
+    saved on the job."""
     job_id = uuid4()
     reported = progress if progress is not None else []
+    saved = saved_pages if saved_pages is not None else []
 
     async def report(fraction: float) -> None:
         reported.append(fraction)
+
+    async def save_page(page_id: str, url: str) -> None:
+        saved.append((page_id, url))
 
     return StageContext(
         job=JobRecord(
@@ -82,8 +90,8 @@ def make_context(
             video_title=None,
             duration_sec=duration_sec,
             notion_parent_id=None,
-            notion_page_id=None,
-            notion_page_url=None,
+            notion_page_id=notion_page[0] if notion_page else None,
+            notion_page_url=notion_page[1] if notion_page else None,
             warnings=(),
             enqueued_at=None,
         ),
@@ -94,4 +102,5 @@ def make_context(
         report_progress=report,
         limiter=limiter or FakeLimiter(),
         model_health=model_health or MemoryModelHealth(),
+        save_notion_page=save_page,
     )

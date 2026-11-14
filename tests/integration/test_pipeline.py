@@ -139,30 +139,59 @@ async def test_concurrent_jobs_are_shared_between_workers(
     assert len(workers) >= 2  # Spec §1.1: at least two workers do the work
 
 
+async def _wait_for_page(job_id: UUID, timeout_s: float) -> None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if await _notion_pages(job_id):
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"no Notion page for job {job_id} after {timeout_s:g} s")
+
+
+async def _checkpoint_output(engine: AsyncEngine, job_id: UUID, stage: Stage) -> dict[str, Any]:
+    async with engine.connect() as conn:
+        output: dict[str, Any] | None = await conn.scalar(
+            select(stage_checkpoints.c.output).where(
+                stage_checkpoints.c.job_id == job_id, stage_checkpoints.c.stage == stage.value
+            )
+        )
+    assert output is not None, f"no {stage} checkpoint"
+    return output
+
+
 @pytest.mark.skipif(shutil.which("docker") is None, reason="needs the docker CLI")
+@pytest.mark.parametrize("stage", STAGE_ORDER, ids=lambda stage: stage.value)
 async def test_killing_the_worker_mid_stage_still_completes_the_job_once(
-    gateway: httpx.AsyncClient, engine: AsyncEngine, job_rows: JobRows
+    gateway: httpx.AsyncClient, engine: AsyncEngine, job_rows: JobRows, stage: Stage
 ) -> None:
     job_id = await _submit(gateway, job_rows)
 
-    # Wait until a worker runs EXTRACT_FRAMES, then SIGKILL that worker's container.
-    running = await wait_running(engine, Stage.EXTRACT_FRAMES, job_id, JOB_TIMEOUT_S)
+    # Wait until a worker runs the stage, then SIGKILL that worker's container (Spec §6).
+    running = await wait_running(engine, stage, job_id, JOB_TIMEOUT_S)
+    if stage is Stage.PUBLISH:
+        # The riskiest moment for F-19: the page exists on Notion, the stage has not finished.
+        await _wait_for_page(job_id, JOB_TIMEOUT_S)
     victim = running.worker  # container hostname = short container id
     killed_at = await kill(engine, victim)
     try:
-        recovery = await follow(engine, job_id, Stage.EXTRACT_FRAMES, killed_at, JOB_TIMEOUT_S)
+        recovery = await follow(engine, job_id, stage, killed_at, JOB_TIMEOUT_S)
     finally:
         await docker("start", victim)
 
     assert recovery.status is JobStatus.COMPLETED
     assert recovery.redelivered_to not in (None, victim)
     events = await _events(engine, job_id)
-    frames = [e for e in events if e["stage"] == "EXTRACT_FRAMES"]
-    redelivered = [e for e in frames if e["kind"] == "REDELIVERED"]
+    redelivered = [e for e in events if e["stage"] == stage.value and e["kind"] == "REDELIVERED"]
     assert redelivered, "the killed worker's message was not redelivered"
     assert redelivered[0]["detail"]["worker"] != victim
     assert redelivered[0]["detail"]["delivery_count"] >= 1
     # Each stage checkpointed exactly once, and the job finished exactly once.
-    assert await _checkpoints(engine, job_id) == sorted(stage.value for stage in STAGE_ORDER)
+    assert await _checkpoints(engine, job_id) == sorted(s.value for s in STAGE_ORDER)
     assert [t for t in _transitions(events) if t[1] == "COMPLETED"] == [("PUBLISHING", "COMPLETED")]
-    assert len(await _notion_pages(job_id)) == 1  # and published exactly one page
+    # Exactly one Notion page, holding exactly the blocks PUBLISH built: none twice.
+    (page,) = await _notion_pages(job_id)
+    built = await _checkpoint_output(engine, job_id, Stage.PUBLISH)
+    assert len(page["blocks"]) == built["blocks"]
+    async with engine.connect() as conn:
+        saved = await conn.scalar(select(jobs.c.notion_page_id).where(jobs.c.id == job_id))
+    assert saved == page["id"]

@@ -30,6 +30,9 @@ class ErrorCode(StrEnum):
     VIDEO_UNAVAILABLE = "VIDEO_UNAVAILABLE"
     STT_UNAVAILABLE = "STT_UNAVAILABLE"
     INTERNAL_ERROR = "INTERNAL_ERROR"
+    STAGE_TIMEOUT = "STAGE_TIMEOUT"  # the stage watchdog stopped a stage (STAGE_TIMEOUT_S)
+    # Waiting only, never a failure: another worker holds this job's publish lock (§8.4).
+    PUBLISH_IN_PROGRESS = "PUBLISH_IN_PROGRESS"
     # Permanent: job -> FAILED.
     INVALID_URL = "INVALID_URL"
     MISSING_NOTION_TOKEN = "MISSING_NOTION_TOKEN"
@@ -65,6 +68,8 @@ RETRYABLE_CODES: frozenset[ErrorCode] = frozenset(
         ErrorCode.VIDEO_UNAVAILABLE,
         ErrorCode.STT_UNAVAILABLE,
         ErrorCode.INTERNAL_ERROR,
+        ErrorCode.STAGE_TIMEOUT,
+        ErrorCode.PUBLISH_IN_PROGRESS,
     }
 )
 

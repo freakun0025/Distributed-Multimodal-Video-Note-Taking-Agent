@@ -4,7 +4,9 @@ Every fake appends to one shared `events` list, so tests assert the order of sid
 in particular that `ack` comes only after the confirmed publish (invariant 3).
 """
 
-from collections.abc import Mapping
+import asyncio
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -55,6 +57,7 @@ class FakeStore:
         start_ok: bool = True,
         first_to_checkpoint: bool = True,
         load_error: Exception | None = None,
+        publish_lock_free: bool = True,
     ) -> None:
         self.events = events
         self.job = job
@@ -62,6 +65,7 @@ class FakeStore:
         self.start_ok = start_ok
         self.first_to_checkpoint = first_to_checkpoint
         self.load_error = load_error
+        self.publish_lock_free = publish_lock_free
 
     async def load(self, job_id: UUID) -> JobRecord | None:
         if self.load_error is not None:
@@ -111,6 +115,17 @@ class FakeStore:
         self, job_id: UUID, stage: Stage, attempt: int, delivery_count: int, worker: str
     ) -> None:
         self.events.append(("redelivered", delivery_count))
+
+    async def save_notion_page(self, job_id: UUID, page_id: str, page_url: str) -> None:
+        self.events.append(("page_saved", page_id, page_url))
+
+    @asynccontextmanager
+    async def publish_lock(self, job_id: UUID) -> AsyncIterator[bool]:
+        self.events.append(("lock", self.publish_lock_free))
+        try:
+            yield self.publish_lock_free
+        finally:
+            self.events.append(("unlock",))
 
 
 class FakePublisher:
@@ -162,14 +177,21 @@ async def _handle(
     headers: Mapping[str, Any] | None = None,
     stage_error: Exception | None = None,
     publish_fails: bool = False,
+    stage_fn: StageFn | None = None,
+    stage_timeout_s: float = 900,
     **store_options: Any,
 ) -> list[Event]:
     events: list[Event] = []
     store = FakeStore(events, job if job is not None else _job(), **store_options)
     settings = Settings(  # type: ignore[call-arg]
-        _env_file=None, retry_max_attempts=3, retry_delays=[10, 30, 90], data_dir=tmp_path
+        _env_file=None,
+        retry_max_attempts=3,
+        retry_delays=[10, 30, 90],
+        stage_timeout_s=stage_timeout_s,
+        youtube_download_timeout_s=stage_timeout_s / 2,  # must stay below the watchdog
+        data_dir=tmp_path,
     )
-    stage_fn = _stage_that(events, stage_error)
+    stage_fn = stage_fn or _stage_that(events, stage_error)
     runtime = Runtime(
         store,
         FakePublisher(events, fail=publish_fails),
@@ -225,7 +247,70 @@ async def test_the_last_stage_finishes_without_publishing(tmp_path: Path) -> Non
     events = await _handle(
         tmp_path=tmp_path, job=_job(JobStatus.EXTRACTING_FRAMES), message=_message(Stage.PUBLISH)
     )
-    assert [e[0] for e in events] == ["start", "run", "progress", "checkpoint", "ack"]
+    # PUBLISH holds the job's lock from entering the stage until the message is acked.
+    assert [e[0] for e in events] == [
+        "lock", "start", "run", "progress", "checkpoint", "ack", "unlock",
+    ]  # fmt: skip
+
+
+async def test_while_another_worker_publishes_the_job_waits_without_spending_an_attempt(
+    tmp_path: Path,
+) -> None:
+    events = await _handle(
+        tmp_path=tmp_path,
+        job=_job(JobStatus.PUBLISHING),
+        message=_message(Stage.PUBLISH, attempt=2),
+        publish_lock_free=False,
+    )
+    assert events == [
+        ("lock", False),
+        ("publish", "retry.10s", Stage.PUBLISH, 2),  # the shortest delay, the same attempt
+        ("waiting", "PUBLISH_IN_PROGRESS", 10),
+        ("ack",),
+        ("unlock",),
+    ]  # never entered the stage, never ran it
+
+
+async def test_only_publish_takes_the_lock(tmp_path: Path) -> None:
+    events = await _handle(tmp_path=tmp_path, publish_lock_free=False)  # TRANSCRIBE
+    assert [e[0] for e in events] == ["start", "run", "progress", "checkpoint", "publish", "ack"]
+
+
+async def test_a_stage_still_running_at_the_watchdog_limit_is_stopped_and_retried(
+    tmp_path: Path,
+) -> None:
+    async def hangs(ctx: StageContext) -> StageOutcome:
+        await asyncio.Event().wait()  # e.g. a subprocess exit that is never reported
+        raise AssertionError("unreachable")
+
+    events = await _handle(tmp_path=tmp_path, stage_fn=hangs, stage_timeout_s=0.05)
+    assert events == [
+        ("start", Stage.TRANSCRIBE),
+        ("publish", "retry.10s", Stage.TRANSCRIBE, 2),
+        ("waiting", "STAGE_TIMEOUT", 10),
+        ("ack",),
+    ]
+
+
+async def test_a_timeout_inside_the_stage_is_not_mistaken_for_the_watchdog(
+    tmp_path: Path,
+) -> None:
+    events = await _handle(tmp_path=tmp_path, stage_error=TimeoutError())
+    assert ("waiting", "INTERNAL_ERROR", 10) in events
+
+
+async def test_publish_can_save_the_notion_page_on_the_job(tmp_path: Path) -> None:
+    async def creates_page(ctx: StageContext) -> StageOutcome:
+        await ctx.save_notion_page("page-1", "https://notion.so/page-1")
+        return StageOutcome(summary={})
+
+    events = await _handle(
+        tmp_path=tmp_path,
+        job=_job(JobStatus.EXTRACTING_FRAMES),
+        message=_message(Stage.PUBLISH),
+        stage_fn=creates_page,
+    )
+    assert ("page_saved", "page-1", "https://notion.so/page-1") in events
 
 
 @pytest.mark.parametrize("status", [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.DEAD_LETTERED])

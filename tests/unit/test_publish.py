@@ -73,9 +73,17 @@ class MemoryNotion:
         return f"up-{filename}"
 
 
-def _context(tmp_path: Path, **settings: Any) -> StageContext:
+def _context(
+    tmp_path: Path,
+    *,
+    saved_pages: list[tuple[str, str]] | None = None,
+    notion_page: tuple[str, str] | None = None,
+    **settings: Any,
+) -> StageContext:
     settings.setdefault("notion_default_parent_id", PARENT)
-    ctx = make_context(tmp_path, Stage.PUBLISH, **settings)
+    ctx = make_context(
+        tmp_path, Stage.PUBLISH, saved_pages=saved_pages, notion_page=notion_page, **settings
+    )
     job = ctx.job_dir
     (job / "frames").mkdir(parents=True)
     (job / "meta.json").write_text(
@@ -147,6 +155,53 @@ async def test_a_retry_after_a_crash_finds_the_page_and_appends_only_the_rest(
     (page_id,) = notion.children[PARENT]  # still one page
     assert len(notion.children[page_id]) == 12  # no block twice
     assert notion.uploads == ["frame_00300.jpg"]  # only frames not yet on the page
+
+
+class SavingNotion(MemoryNotion):
+    """Records how many blocks the page had each time a page was saved on the job."""
+
+    def __init__(self, saved: list[tuple[str, str]]) -> None:
+        super().__init__()
+        self.saved = saved
+        self.blocks_when_saved: list[int] = []
+
+    async def append(self, block_id: str, children: Sequence[Mapping[str, Any]]) -> None:
+        self.blocks_when_saved.extend(len(self.children.get(p, [])) for p, _ in self.saved)
+        await super().append(block_id, children)
+
+
+async def test_a_new_page_is_saved_on_the_job_before_any_block_is_appended(
+    tmp_path: Path,
+) -> None:
+    saved: list[tuple[str, str]] = []
+    ctx = _context(tmp_path, saved_pages=saved)
+    notion = SavingNotion(saved)
+    await publish(ctx, notion)
+    (page_id,) = notion.children[PARENT]
+    assert saved == [(page_id, f"https://notion.test/{page_id}")]
+    assert notion.blocks_when_saved[0] == 0  # saved while the page was still empty
+
+
+async def test_a_page_found_by_its_job_tag_is_saved_on_the_job(tmp_path: Path) -> None:
+    saved: list[tuple[str, str]] = []
+    ctx = _context(tmp_path, saved_pages=saved)
+    notion = MemoryNotion()
+    page = await notion.create_page(PARENT, f"Raft lecture{job_tag(ctx.job.id)}")  # crashed run
+    await publish(ctx, notion)
+    assert saved == [(page.id, page.url)]
+    assert notion.children[PARENT] == [page.id]
+
+
+async def test_a_page_already_saved_on_the_job_is_reused_without_listing_the_parent(
+    tmp_path: Path,
+) -> None:
+    notion = MemoryNotion()
+    page = await notion.create_page("elsewhere", "Renamed by hand")  # no job tag any more
+    ctx = _context(tmp_path, notion_page=(page.id, page.url))
+    outcome = await publish(ctx, notion)
+    assert PARENT not in notion.children  # nothing created under the destination
+    assert outcome.job_updates["notion_page_id"] == page.id
+    assert len(notion.children[page.id]) == 12
 
 
 async def test_publishing_a_finished_page_again_changes_nothing(tmp_path: Path) -> None:

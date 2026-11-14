@@ -32,6 +32,12 @@
   box-sizing: border-box;
 }
 
+/* The `hidden` attribute must win over any `display` set below (e.g. .notion's inline-block),
+   or View in Notion shows on jobs that have no page yet. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   width: 380px;
   margin: 0;

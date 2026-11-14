@@ -157,6 +157,17 @@ test("waiting text covers other reasons, unknown apis and an elapsed deadline", 
   assert.equal(status.waitingText(null, NOW), null);
 });
 
+test("waiting text names our own reasons instead of blaming an external service", () => {
+  assert.equal(
+    status.waitingText({ until: "2026-11-02T12:00:10Z", reason: "STAGE_TIMEOUT" }, NOW),
+    "Waiting — a step took too long, retrying in 10 s.",
+  );
+  assert.equal(
+    status.waitingText({ until: "2026-11-02T12:00:10Z", reason: "PUBLISH_IN_PROGRESS" }, NOW),
+    "Waiting — another worker is already publishing this job, retrying in 10 s.",
+  );
+});
+
 test("a terminal job never shows a stale waiting line", () => {
   const waiting = { until: "2026-11-02T12:00:12Z", reason: "RATE_LIMITED:llm" };
   const view = status.describeJob(job({ status: "COMPLETED", progress: 100, waiting }), NOW);

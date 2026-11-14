@@ -12,6 +12,8 @@ status ?= 429
 retry_after ?=
 mode ?= partial
 stage ?= EXTRACT_FRAMES
+jobs ?= 6
+since ?= 15
 args ?=
 # The fakes service's control endpoint, published on the host by docker-compose.yml.
 FAKES ?= http://127.0.0.1:8090
@@ -19,7 +21,7 @@ FAKES_PUT = curl -fsS -X PUT -H 'content-type: application/json'
 
 .DEFAULT_GOAL := help
 .PHONY: help up up-fakes up-gpu up-obs down logs migrate lint test test-ext itest scale \
-        fake-429 fake-frames fake-unavailable fake-reset fakes kill-worker burst fernet-key
+        fake-429 fake-frames fake-unavailable fake-reset fakes kill-worker burst burst-report \n        fernet-key
 
 help: ## List commands
 	@grep -E '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-17s %s\n", $$1, $$2}'
@@ -89,5 +91,8 @@ fakes: ## Show the fakes' failure switches
 kill-worker: ## SIGKILL the worker running a stage, then follow the job: make kill-worker stage=EXTRACT_FRAMES
 	$(UV) run python -m chaos.kill_worker --stage $(stage)
 
-burst: ## Submit 6 jobs in a row  (CP11)
-	@echo "burst arrives in CP11 (docs/ROADMAP.md)"; exit 1
+burst: ## Queue resilience (Spec §9), fakes stack: jobs=6 jobs for different videos, then drain time and LLM 429s
+	$(UV) run python -m chaos.burst submit --jobs $(jobs)
+
+burst-report: ## Jobs submitted in the last since=15 minutes (e.g. Take Notes on several videos): drain time, LLM 429s
+	$(UV) run python -m chaos.burst report --since $(since)

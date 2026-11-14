@@ -6,9 +6,10 @@
 Waits until a job is running the stage (the newest such job, or `--job`), finds the worker running
 it from the job's events (a worker is named by its container hostname, the short container ID),
 kills that container with `docker kill --signal KILL`, then reports which worker the broker gave
-the message to and when the job finished. The killed container is started again at the end
-(`--leave-dead` keeps it down; Compose's restart policy does not restart a container killed by
-hand).
+the message to and when the job finished. The killed container is started again as soon as another
+worker has the message (or when following the job ends), so the stack is back to full strength
+while the job finishes (`--leave-dead` keeps it down; Compose's restart policy does not restart a
+container killed by hand).
 
 Runs on the host: Postgres on the port Compose publishes (`CHAOS_DATABASE_URL` overrides it) and
 the docker CLI. Times are the database's clock, so they match the job's events.
@@ -21,15 +22,16 @@ import asyncio
 import os
 import sys
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from common.db import create_engine, job_events, jobs
+from common.db import create_engine, job_events, jobs, stage_checkpoints
 from common.state import STAGE_ORDER, JobStatus, Stage, is_terminal, status_of
 
 DATABASE_URL = os.environ.get(
@@ -70,13 +72,23 @@ class Recovery:
 async def find_running(
     engine: AsyncEngine, stage: Stage, job_id: UUID | None = None
 ) -> Running | None:
-    """The newest job in the stage's status that is not waiting in a delay queue, with the
-    worker of its latest entry into that status (first run, retry or redelivery)."""
+    """The newest job running the stage (in its status, not waiting in a delay queue, the stage
+    not checkpointed yet: a job stays in the status after the stage is done until a worker
+    claims the next one), with the worker of its latest entry into that status.
+
+    PUBLISH counts only once the Notion page exists (it is saved on the job the moment it is
+    created, F-19): a crash after that is the one that could leave a second page."""
     status = status_of(stage)
+    done = exists().where(
+        stage_checkpoints.c.job_id == jobs.c.id, stage_checkpoints.c.stage == stage.value
+    )
     query = select(jobs.c.id).where(
         jobs.c.status == status.value,
         or_(jobs.c.waiting_until.is_(None), jobs.c.waiting_until <= func.now()),
+        ~done,
     )
+    if stage is Stage.PUBLISH:
+        query = query.where(jobs.c.notion_page_id.is_not(None))
     if job_id is not None:
         query = query.where(jobs.c.id == job_id)
     async with engine.connect() as conn:
@@ -132,9 +144,15 @@ async def kill(engine: AsyncEngine, worker: str) -> datetime:
 
 
 async def follow(
-    engine: AsyncEngine, job_id: UUID, stage: Stage, killed_at: datetime, timeout_s: float
+    engine: AsyncEngine,
+    job_id: UUID,
+    stage: Stage,
+    killed_at: datetime,
+    timeout_s: float,
+    on_redelivered: Callable[[datetime, str], Awaitable[None]] | None = None,
 ) -> Recovery:
-    """Wait for the job to end; note when, and to which worker, the killed stage was redelivered."""
+    """Wait for the job to end; note when, and to which worker, the killed stage was redelivered
+    (`on_redelivered` is awaited the moment that is seen)."""
     deadline = time.monotonic() + timeout_s
     redelivered: tuple[datetime, str] | None = None
     while True:
@@ -155,6 +173,8 @@ async def follow(
                 ).first()
                 if event is not None:
                     redelivered = (event.at, str((event.detail or {}).get("worker")))
+                    if on_redelivered is not None:
+                        await on_redelivered(*redelivered)
             row = (
                 await conn.execute(
                     select(jobs.c.status, jobs.c.finished_at).where(jobs.c.id == job_id)
@@ -185,18 +205,25 @@ async def main(args: argparse.Namespace) -> int:
         running = await wait_running(engine, stage, args.job, args.wait)
         killed_at = await kill(engine, running.worker)
         _say(f"Killed worker {running.worker} (SIGKILL) in {stage.value} of job {running.job_id}")
-        try:
-            recovery = await follow(engine, running.job_id, stage, killed_at, args.timeout)
-        finally:
-            if not args.leave_dead:
-                await docker("start", running.worker)
+        dead = [running.worker]
+
+        async def restart() -> None:
+            if dead and not args.leave_dead:
+                await docker("start", dead.pop())
                 _say(f"Started {running.worker} again")
-        if recovery.reassigned_after_s is not None:
-            _say(
-                f"Redelivered to worker {recovery.redelivered_to} "
-                f"{recovery.reassigned_after_s:.1f} s after the kill"
+
+        async def redelivered(at: datetime, worker: str) -> None:
+            seconds = (at - killed_at).total_seconds()
+            _say(f"Redelivered to worker {worker} {seconds:.1f} s after the kill")
+            await restart()
+
+        try:
+            recovery = await follow(
+                engine, running.job_id, stage, killed_at, args.timeout, redelivered
             )
-        else:
+        finally:
+            await restart()
+        if recovery.reassigned_after_s is None:
             _say("No redelivery seen")
         if recovery.finished_after_s is not None:
             _say(f"Job {recovery.status.value} {recovery.finished_after_s:.1f} s after the kill")

@@ -5,6 +5,8 @@ Every status change goes through common.state.transition() (invariant 5).
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import timedelta
 from typing import Any, Protocol
 from uuid import UUID
@@ -75,6 +77,20 @@ class JobStore(Protocol):
     async def record_redelivery(
         self, job_id: UUID, stage: Stage, attempt: int, delivery_count: int, worker: str
     ) -> None: ...
+
+    async def save_notion_page(self, job_id: UUID, page_id: str, page_url: str) -> None:
+        """Remember the job's Notion page the moment it exists (F-19, ARCHITECTURE §8.4)."""
+        ...
+
+    def publish_lock(self, job_id: UUID) -> AbstractAsyncContextManager[bool]:
+        """Hold the job's publish lock while the block runs: True, or False when another
+        worker holds it. Released when the block ends or the worker's connection dies."""
+        ...
+
+
+def publish_lock_key(job_id: UUID) -> int:
+    """The job's advisory-lock key: a signed 64-bit integer from the UUID's first 8 bytes."""
+    return int.from_bytes(job_id.bytes[:8], "big", signed=True)
 
 
 class _SupersededError(Exception):
@@ -272,6 +288,24 @@ class PostgresJobStore:
                     )
                 )
         return moved is not None
+
+    async def save_notion_page(self, job_id: UUID, page_id: str, page_url: str) -> None:
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                update(jobs)
+                .where(jobs.c.id == job_id, jobs.c.status == JobStatus.PUBLISHING.value)
+                .values(notion_page_id=page_id, notion_page_url=page_url, updated_at=func.now())
+            )
+
+    @asynccontextmanager
+    async def publish_lock(self, job_id: UUID) -> AsyncIterator[bool]:
+        # A transaction-level advisory lock on a connection of its own: it ends with the
+        # transaction, so neither an exception nor a dead worker can leave it held.
+        async with self._engine.connect() as conn, conn.begin():
+            locked = await conn.scalar(
+                select(func.pg_try_advisory_xact_lock(publish_lock_key(job_id)))
+            )
+            yield bool(locked)
 
     async def record_redelivery(
         self, job_id: UUID, stage: Stage, attempt: int, delivery_count: int, worker: str

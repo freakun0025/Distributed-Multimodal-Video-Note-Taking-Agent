@@ -44,6 +44,8 @@
     VIDEO_UNAVAILABLE: "This video is private, removed or otherwise unavailable.",
     STT_UNAVAILABLE: "This video has no captions and speech-to-text was unavailable.",
     INTERNAL_ERROR: "Something went wrong on our side.",
+    STAGE_TIMEOUT: "A step kept taking too long, so we stopped retrying.",
+    PUBLISH_IN_PROGRESS: "Another worker was already publishing this job.",
     INVALID_URL: "That is not a YouTube video link.",
     MISSING_NOTION_TOKEN: "Connect Notion first: open the extension settings and click Connect Notion.",
     VIDEO_TOO_LONG: "This video is longer than 20 minutes, so it can't be turned into notes.",
@@ -72,6 +74,11 @@
   const FALLBACK_ERROR = "Something went wrong.";
 
   const API_NAMES = { youtube: "YouTube", llm: "the AI model", notion: "Notion" };
+  // Waiting reasons that are not an external service's doing (no ":api" part).
+  const OWN_WAITING_REASONS = {
+    STAGE_TIMEOUT: "a step took too long",
+    PUBLISH_IN_PROGRESS: "another worker is already publishing this job",
+  };
 
   function isTerminal(status) {
     return TERMINAL_STATUSES.includes(status);
@@ -113,9 +120,10 @@
     const [code, api] = String(waiting.reason ?? "").split(":");
     const who = API_NAMES[api] ?? "an external service";
     const why = code.startsWith("RATE_LIMITED") ? "is rate-limiting us" : "had a temporary problem";
+    const reason = OWN_WAITING_REASONS[code] ?? `${who} ${why}`;
     const seconds = Math.ceil((Date.parse(waiting.until) - nowMs) / 1000);
     const when = Number.isFinite(seconds) && seconds > 0 ? `retrying in ${seconds} s` : "retrying now";
-    return `Waiting — ${who} ${why}, ${when}.`;
+    return `Waiting — ${reason}, ${when}.`;
   }
 
   function clock(totalSeconds) {

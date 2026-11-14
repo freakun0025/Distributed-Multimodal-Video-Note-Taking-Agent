@@ -27,6 +27,16 @@ def test_defaults_match_the_documented_values(monkeypatch: pytest.MonkeyPatch) -
     assert settings.transcript_langs == ["en", "en-US", "en-GB", "hi"]
 
 
+def test_a_download_limit_at_or_past_the_stage_watchdog_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert (
+        _settings(monkeypatch).youtube_download_timeout_s < _settings(monkeypatch).stage_timeout_s
+    )
+    with pytest.raises(ValueError, match="YOUTUBE_DOWNLOAD_TIMEOUT_S"):
+        _settings(monkeypatch, YOUTUBE_DOWNLOAD_TIMEOUT_S="900", STAGE_TIMEOUT_S="900")
+
+
 def test_comma_separated_lists_are_parsed(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(monkeypatch, RETRY_DELAYS="2, 4,8", TRANSCRIPT_LANGS="de,fr")
     assert settings.retry_delays == [2, 4, 8]

@@ -71,6 +71,53 @@ async def test_a_fake_llm_429_is_a_per_minute_limit_with_googles_retry_delay(
     assert provider.answered_by == FIRST
 
 
+def _gemini(http: httpx.AsyncClient, health: MemoryModelHealth) -> GeminiProvider:
+    return GeminiProvider(
+        FakeLimiter(), api_key="test-key", chain=CHAIN, health=health,
+        base_url="http://fakes/llm", http_client=http,
+    )  # fmt: skip
+
+
+async def _llm_statuses(http: httpx.AsyncClient) -> list[int]:
+    return [call["status"] for call in (await http.get("/_control/llm/calls")).json()]
+
+
+async def test_the_fake_llm_answers_429_past_its_calls_per_minute_like_gemini(
+    fakes_http: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = [1000.0]
+    monkeypatch.setattr(fakes.app, "_monotonic", lambda: now[0])
+    assert (await fakes_http.put("/_control/llm", json={"rpm": 2})).json()["rpm"] == 2
+    health = MemoryModelHealth()
+    provider = _gemini(fakes_http, health)
+    assert await provider.generate_json(REQUEST)
+    now[0] += 20
+    assert await provider.generate_json(REQUEST)
+    now[0] += 20
+    with pytest.raises(RetryableError) as caught:
+        await provider.generate_json(REQUEST)
+    assert caught.value.code is ErrorCode.RATE_LIMITED
+    assert caught.value.retry_after_s == 20  # until the first call leaves the minute
+    assert health.bench == {}  # per-minute, never taken for the daily quota (D36)
+    now[0] += 20  # the first call is a minute old: room for one more
+    assert await provider.generate_json(REQUEST)
+    assert await _llm_statuses(fakes_http) == [200, 200, 429, 200]
+
+
+async def test_the_default_fake_llm_limit_is_the_free_tier_rpm_and_0_turns_it_off(
+    fakes_http: httpx.AsyncClient,
+) -> None:
+    switches = (await fakes_http.get("/_control/switches")).json()
+    assert switches["llm_rpm"] == fakes.app.FAKE_LLM_RPM == 5
+    await fakes_http.put("/_control/llm", json={"rpm": 0})
+    provider = _gemini(fakes_http, MemoryModelHealth())
+    for _ in range(7):
+        assert await provider.generate_json(REQUEST)
+    assert set(await _llm_statuses(fakes_http)) == {200}
+    for bad in (-1, "5", 2.5, True):
+        assert (await fakes_http.put("/_control/llm", json={"rpm": bad})).status_code == 422
+
+
 async def test_a_fake_notion_429_carries_retry_after(fakes_http: httpx.AsyncClient) -> None:
     await fakes_http.put("/_control/faults", json={"api": "notion", "retry_after": 3})
     notion = NotionClient(
@@ -174,6 +221,7 @@ async def test_reset_makes_every_api_work_again(fakes_http: httpx.AsyncClient) -
         "faults": {},
         "youtube": {"unavailable": False, "frames": "ok", "duration": 600},
         "llm_unavailable": [],
+        "llm_rpm": fakes.app.FAKE_LLM_RPM,
     }
     assert (await fakes_http.get("/_control/calls")).json() == []
 

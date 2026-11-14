@@ -81,6 +81,7 @@ class StageOutcome:
 
 
 ProgressReporter = Callable[[float], Awaitable[None]]
+NotionPageSaver = Callable[[str, str], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -93,6 +94,8 @@ class StageContext:
     report_progress: ProgressReporter  # fraction 0..1 of the stage's progress range
     limiter: Limiter  # acquire before every YouTube / LLM / Notion call (invariant 6)
     model_health: ModelHealth  # LLM models benched by any worker (D36)
+    # PUBLISH saves (page id, url) on the job the moment the page exists (F-19, §8.4).
+    save_notion_page: NotionPageSaver
 
 
 StageFn = Callable[[StageContext], Awaitable[StageOutcome]]
