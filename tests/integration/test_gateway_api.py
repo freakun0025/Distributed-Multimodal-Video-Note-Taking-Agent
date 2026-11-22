@@ -111,6 +111,21 @@ async def test_an_idempotency_key_reused_for_another_video_is_409(submit: Any) -
     assert first.json()["job_id"] not in second.text
 
 
+async def test_a_parent_that_is_not_a_notion_page_is_refused_before_any_work(
+    submit: Any, engine: AsyncEngine
+) -> None:
+    before = await _job_count(engine)
+    response = await submit(json={**BODY, "notion_parent_id": "not a page"})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "NOTION_PARENT_NOT_FOUND"
+    assert await _job_count(engine) == before  # no row, so no stage ever runs
+
+
+async def _job_count(engine: AsyncEngine) -> int:
+    async with engine.connect() as conn:
+        return int(await conn.scalar(select(func.count()).select_from(jobs)) or 0)
+
+
 async def test_broker_topology_has_quorum_queues_and_a_dead_letter_route(
     rabbitmq_api: httpx.AsyncClient,
 ) -> None:

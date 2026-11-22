@@ -484,7 +484,7 @@ The extension calls these endpoints; they are listed here for reference.
 
 | Endpoint | Response |
 | --- | --- |
-| `POST /jobs` with `{youtube_url, notion_token, notion_parent_id?}` | `202` with `{job_id, status: "QUEUED", video_id}` and a `Location` header; `400` `INVALID_URL` or `MISSING_NOTION_TOKEN`; `409` `IDEMPOTENCY_KEY_REUSED` when an `Idempotency-Key` header was already used for another video; `422` `VALIDATION_ERROR`; `503` `BROKER_UNAVAILABLE` |
+| `POST /jobs` with `{youtube_url, notion_token, notion_parent_id?}` | `202` with `{job_id, status: "QUEUED", video_id}` and a `Location` header; `400` `INVALID_URL`, `MISSING_NOTION_TOKEN` or `NOTION_PARENT_NOT_FOUND` (no destination page, or one that is not a Notion page ID or link, refused before any work); `409` `IDEMPOTENCY_KEY_REUSED` when an `Idempotency-Key` header was already used for another video; `422` `VALIDATION_ERROR`; `503` `BROKER_UNAVAILABLE` |
 | `GET /jobs/{job_id}` | `200` with `{job_id, status, progress, video_title, duration_sec, warnings, error, result, waiting}`; `404` for an unknown ID |
 | `GET /jobs/{job_id}/results` | `409` `JOB_NOT_TERMINAL` until the job ends, then `200` with `{status, result: {notion_page_url, frames_requested, frames_published}, warnings, error}` |
 | `GET /healthz` | `200` when PostgreSQL, RabbitMQ and Redis answer, otherwise `503` naming the one that does not |
@@ -515,7 +515,7 @@ tests on every push and pull request. The integration tests need the Compose sta
 The integration tests run the real gateway, broker, database, Redis and workers. They cover every
 stage, a 429 from each external API, retries and backoff, the DLQ, partial and total frame
 failure, over-long videos, a worker killed in each stage, the publish lock, and a burst of six
-jobs with zero LLM 429s. Current state: 565 unit tests, 72 extension tests and 63 integration
+jobs with zero LLM 429s. Current state: 572 unit tests, 72 extension tests and 64 integration
 tests, all passing.
 
 Failure injection on the fake APIs:

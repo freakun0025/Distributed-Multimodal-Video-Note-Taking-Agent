@@ -13,10 +13,13 @@ from gateway.main import create_app
 from gateway.routes.jobs import job_status_response
 
 VALID_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+PARENT = "0123456789abcdef0123456789abcdef"
 
 
-async def _request(method: str, path: str, **kwargs: Any) -> httpx.Response:
-    app = create_app(Settings(_env_file=None))  # type: ignore[call-arg]
+async def _request(
+    method: str, path: str, *, settings: dict[str, Any] | None = None, **kwargs: Any
+) -> httpx.Response:
+    app = create_app(Settings(_env_file=None, **(settings or {})))  # type: ignore[call-arg]
     app.state.engine = None  # validation fails before any DB access
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -143,7 +146,7 @@ async def test_a_reused_idempotency_key_for_another_video_is_409(
     response = await _request(
         "POST",
         "/jobs",
-        json={"youtube_url": VALID_URL, "notion_token": "t"},
+        json={"youtube_url": VALID_URL, "notion_token": "t", "notion_parent_id": PARENT},
         headers={"Idempotency-Key": "k-1"},
     )
     assert response.status_code == 409
@@ -163,7 +166,7 @@ async def test_a_replayed_idempotency_key_for_the_same_video_returns_the_job(
     response = await _request(
         "POST",
         "/jobs",
-        json={"youtube_url": VALID_URL, "notion_token": "t"},
+        json={"youtube_url": VALID_URL, "notion_token": "t", "notion_parent_id": PARENT},
         headers={"Idempotency-Key": "k-1"},
     )
     assert response.status_code == 202
@@ -173,3 +176,51 @@ async def test_a_replayed_idempotency_key_for_the_same_video_returns_the_job(
         "video_id": "dQw4w9WgXcQ",
     }
     assert response.headers["location"] == f"/jobs/{existing}"
+
+
+@pytest.mark.parametrize(
+    ("parent", "default", "message"),
+    [
+        (None, None, "no destination page"),
+        ("", None, "no destination page"),
+        ("not a page", PARENT, "not a Notion page ID"),  # a given parent never falls back
+        ("https://www.notion.so/Video-notes", None, "not a Notion page ID"),
+    ],
+)
+async def test_a_job_with_no_usable_destination_is_refused_before_any_work(
+    parent: str | None, default: str | None, message: str
+) -> None:
+    body: dict[str, Any] = {"youtube_url": VALID_URL, "notion_token": "t"}
+    if parent is not None:
+        body["notion_parent_id"] = parent
+    # The engine is None: a DB insert (or a publish) would raise, so 400 proves none happened.
+    response = await _request(
+        "POST", "/jobs", json=body, settings={"notion_default_parent_id": default}
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "NOTION_PARENT_NOT_FOUND"
+    assert message in response.json()["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("parent", "default"),
+    [
+        (None, PARENT),  # the server's default page
+        (f"https://www.notion.so/Video-notes-{PARENT}", None),  # a pasted page link
+        ("01234567-89ab-cdef-0123-456789abcdef", None),  # a dashed ID
+    ],
+)
+async def test_a_usable_destination_gets_past_the_check(
+    monkeypatch: pytest.MonkeyPatch, parent: str | None, default: str | None
+) -> None:
+    async def stored(*_: Any) -> tuple[Any, JobStatus, bool, str]:
+        return uuid4(), JobStatus.QUEUED, False, "dQw4w9WgXcQ"
+
+    monkeypatch.setattr("gateway.routes.jobs._insert_job", stored)
+    body: dict[str, Any] = {"youtube_url": VALID_URL, "notion_token": "t"}
+    if parent is not None:
+        body["notion_parent_id"] = parent
+    response = await _request(
+        "POST", "/jobs", json=body, settings={"notion_default_parent_id": default}
+    )
+    assert response.status_code == 202

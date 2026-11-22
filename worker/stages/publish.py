@@ -24,9 +24,10 @@ from pathlib import Path
 from common.crypto import TokenCipher
 from common.errors import ErrorCode, ExternalApi, PermanentError
 from common.models import FrameResult, Synthesis, VideoMeta
+from common.notion_ids import notion_id
 from common.youtube_url import canonical_url
 from worker.candidates import PREVIEW_NAME
-from worker.clients.notion import MAX_CHILDREN, NotionApi, NotionPage, notion_client, notion_id
+from worker.clients.notion import MAX_CHILDREN, NotionApi, NotionPage, notion_client
 from worker.context import StageContext, StageOutcome
 from worker.notion_page import PageFrame, build_page, job_tag, page_title, with_upload
 from worker.stages.frames import FRAMES_DIR, MANIFEST_FILE, VIDEO_NAME
