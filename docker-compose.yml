@@ -94,7 +94,8 @@ services:
       dockerfile: docker/gateway.Dockerfile
     image: vna/gateway:dev
     ports:
-      - "8000:8000"
+      # The API has no authentication: only this machine (the extension) may reach it.
+      - "127.0.0.1:8000:8000"
     depends_on: *depends-on-core
     healthcheck:
       test:

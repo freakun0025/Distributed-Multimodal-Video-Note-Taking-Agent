@@ -129,3 +129,47 @@ def test_waiting_is_shown_only_while_the_job_is_running() -> None:
         )
     )
     assert done.waiting is None
+
+
+async def test_a_reused_idempotency_key_for_another_video_is_409(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    existing = uuid4()
+
+    async def stored_for_other_video(*_: Any) -> tuple[Any, JobStatus, bool, str]:
+        return existing, JobStatus.QUEUED, False, "aaaaaaaaaaa"
+
+    monkeypatch.setattr("gateway.routes.jobs._insert_job", stored_for_other_video)
+    response = await _request(
+        "POST",
+        "/jobs",
+        json={"youtube_url": VALID_URL, "notion_token": "t"},
+        headers={"Idempotency-Key": "k-1"},
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
+    assert str(existing) not in response.text  # never hands out the other video's job
+
+
+async def test_a_replayed_idempotency_key_for_the_same_video_returns_the_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    existing = uuid4()
+
+    async def stored_for_same_video(*_: Any) -> tuple[Any, JobStatus, bool, str]:
+        return existing, JobStatus.SUMMARIZING, False, "dQw4w9WgXcQ"
+
+    monkeypatch.setattr("gateway.routes.jobs._insert_job", stored_for_same_video)
+    response = await _request(
+        "POST",
+        "/jobs",
+        json={"youtube_url": VALID_URL, "notion_token": "t"},
+        headers={"Idempotency-Key": "k-1"},
+    )
+    assert response.status_code == 202
+    assert response.json() == {
+        "job_id": str(existing),
+        "status": "SUMMARIZING",
+        "video_id": "dQw4w9WgXcQ",
+    }
+    assert response.headers["location"] == f"/jobs/{existing}"

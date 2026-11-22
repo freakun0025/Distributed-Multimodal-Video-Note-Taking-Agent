@@ -96,14 +96,22 @@ async def _token(request: Request, grant: dict[str, Any], *, rejected: str) -> N
         log.warning("notion_oauth_unreachable", code=error.code)
         raise ApiError(502, ErrorCode.UPSTREAM_ERROR, "Notion could not be reached") from exc
     if response.status_code == 200:
-        data = response.json()
-        return NotionTokenResponse(
-            access_token=data["access_token"],
-            refresh_token=data.get("refresh_token"),
-            workspace_name=data.get("workspace_name"),
-            bot_id=data.get("bot_id"),
-            expires_in=data.get("expires_in"),
-        )
+        try:
+            data = response.json()
+            return NotionTokenResponse(
+                access_token=data["access_token"],
+                refresh_token=data.get("refresh_token"),
+                workspace_name=data.get("workspace_name"),
+                bot_id=data.get("bot_id"),
+                expires_in=data.get("expires_in"),
+            )
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            # Not a token (a proxy's HTML page, an empty body): Notion's fault, not ours.
+            # pydantic's ValidationError is a ValueError. Never log the body: it may hold a token.
+            log.warning("notion_oauth_malformed_response", error=type(exc).__name__)
+            raise ApiError(
+                502, ErrorCode.UPSTREAM_ERROR, "Notion sent an unreadable answer; try again"
+            ) from exc
     notion_code = _notion_error(response)
     log.warning("notion_oauth_rejected", status=response.status_code, notion_code=notion_code)
     if response.status_code == 429:
