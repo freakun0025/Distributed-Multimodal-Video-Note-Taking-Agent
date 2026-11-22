@@ -59,6 +59,7 @@
     ENQUEUE_FAILED: "The job couldn't be started. Please try again.",
     OAUTH_CODE_INVALID: "Connecting to Notion failed. Please try again.",
     BROKER_UNAVAILABLE: "The notes server couldn't queue the job right now. Try again in a moment.",
+    IDEMPOTENCY_KEY_REUSED: "This request was already used for another video. Click Take Notes again.",
     VALIDATION_ERROR: "The notes server didn't accept the request.",
     // Extension-side codes.
     NO_TOKEN: "Connect Notion first: open the extension settings and click Connect Notion.",

@@ -50,6 +50,7 @@ _NOT_FOUND = {"model": ErrorBody, "description": "Unknown or malformed job id"}
     response_model=JobCreatedResponse,
     responses={
         400: {"model": ErrorBody, "description": "INVALID_URL or MISSING_NOTION_TOKEN"},
+        409: {"model": ErrorBody, "description": "IDEMPOTENCY_KEY_REUSED for another video"},
         422: {"model": ErrorBody, "description": "Body does not match the schema"},
         503: {"model": ErrorBody, "description": "BROKER_UNAVAILABLE"},
     },
@@ -70,9 +71,16 @@ async def create_job(
 
     state = request.app.state
     engine: AsyncEngine = state.engine
-    job_id, status, created = await _insert_job(
+    job_id, status, created, stored_video_id = await _insert_job(
         engine, video_id, body.notion_parent_id, idempotency_key
     )
+    if not created and stored_video_id != video_id:
+        # A reused key for another video must not answer with that other video's job.
+        raise ApiError(
+            409,
+            ErrorCode.IDEMPOTENCY_KEY_REUSED,
+            "this Idempotency-Key was already used for another video",
+        )
     response.headers["Location"] = f"/jobs/{job_id}"
     if not created:
         log.info("job_create_replayed", job_id=str(job_id))
@@ -117,8 +125,10 @@ async def create_job(
 
 async def _insert_job(
     engine: AsyncEngine, video_id: str, notion_parent_id: str | None, idempotency_key: str | None
-) -> tuple[UUID, JobStatus, bool]:
-    """Insert the job row (outbox: enqueued_at NULL). Same Idempotency-Key → the existing job."""
+) -> tuple[UUID, JobStatus, bool, str]:
+    """Insert the job row (outbox: enqueued_at NULL). Same Idempotency-Key → the existing job.
+
+    Returns (job id, status, created, the stored job's video id)."""
     async with engine.begin() as conn:
         inserted = await conn.scalar(
             insert(jobs)
@@ -133,13 +143,15 @@ async def _insert_job(
             .returning(jobs.c.id)
         )
         if inserted is not None:
-            return inserted, JobStatus.QUEUED, True
+            return inserted, JobStatus.QUEUED, True, video_id
         existing = (
             await conn.execute(
-                select(jobs.c.id, jobs.c.status).where(jobs.c.idempotency_key == idempotency_key)
+                select(jobs.c.id, jobs.c.status, jobs.c.video_id).where(
+                    jobs.c.idempotency_key == idempotency_key
+                )
             )
         ).one()
-        return existing.id, JobStatus(existing.status), False
+        return existing.id, JobStatus(existing.status), False, existing.video_id
 
 
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse, responses={404: _NOT_FOUND})

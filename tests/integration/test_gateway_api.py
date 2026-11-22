@@ -100,6 +100,17 @@ async def test_same_idempotency_key_returns_the_same_job(submit: Any, engine: As
     assert count == 1
 
 
+async def test_an_idempotency_key_reused_for_another_video_is_409(submit: Any) -> None:
+    key = f"itest-{uuid4()}"
+    first = await submit(json=BODY, headers={"Idempotency-Key": key})
+    other = {**BODY, "youtube_url": "https://www.youtube.com/watch?v=aaaaaaaaaaa"}
+    second = await submit(json=other, headers={"Idempotency-Key": key})
+    assert first.status_code == 202
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
+    assert first.json()["job_id"] not in second.text
+
+
 async def test_broker_topology_has_quorum_queues_and_a_dead_letter_route(
     rabbitmq_api: httpx.AsyncClient,
 ) -> None:
