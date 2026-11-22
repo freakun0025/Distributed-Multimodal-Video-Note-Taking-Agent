@@ -152,7 +152,10 @@ class _RefusingPublisher:
 async def test_unconfirmed_publish_fails_the_job_and_returns_503(
     engine: AsyncEngine, job_rows: JobRows
 ) -> None:
-    app = create_app(Settings(_env_file=None))  # type: ignore[call-arg]
+    # A destination page, so the job gets past the gateway's own checks to the broker.
+    app = create_app(
+        Settings(_env_file=None, notion_default_parent_id="0123456789abcdef0123456789abcdef")  # type: ignore[call-arg]
+    )
     publisher = _RefusingPublisher()
     app.state.engine = engine
     app.state.publisher = publisher
