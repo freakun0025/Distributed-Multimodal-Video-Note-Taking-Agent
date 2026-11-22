@@ -128,3 +128,21 @@ async def test_notion_unreachable_is_a_502() -> None:
 async def test_an_empty_code_is_a_validation_error() -> None:
     response = await _request("POST", "/auth/notion/exchange", json={"code": ""})
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"content": b"<html>proxy error</html>"},
+        {"json": {"token_type": "bearer"}},
+        {"json": ["not", "an", "object"]},
+        {"json": {"access_token": None}},
+    ],
+)
+@respx.mock
+async def test_a_200_without_a_usable_token_is_a_502(reply: dict[str, Any]) -> None:
+    respx.post(TOKEN_URL).respond(200, **reply)
+    response = await _request("POST", "/auth/notion/exchange", json={"code": "the-code"})
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "UPSTREAM_ERROR"
+    assert "very-secret" not in response.text and "the-code" not in response.text
