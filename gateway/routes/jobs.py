@@ -34,6 +34,7 @@ from common.models import (
     Trace,
     WaitingInfo,
 )
+from common.notion_ids import notion_id
 from common.state import JobStatus, Stage, is_terminal, transition
 from common.youtube_url import canonical_url, parse_video_id
 from gateway.errors import ApiError
@@ -49,7 +50,10 @@ _NOT_FOUND = {"model": ErrorBody, "description": "Unknown or malformed job id"}
     status_code=202,
     response_model=JobCreatedResponse,
     responses={
-        400: {"model": ErrorBody, "description": "INVALID_URL or MISSING_NOTION_TOKEN"},
+        400: {
+            "model": ErrorBody,
+            "description": "INVALID_URL, MISSING_NOTION_TOKEN or NOTION_PARENT_NOT_FOUND",
+        },
         409: {"model": ErrorBody, "description": "IDEMPOTENCY_KEY_REUSED for another video"},
         422: {"model": ErrorBody, "description": "Body does not match the schema"},
         503: {"model": ErrorBody, "description": "BROKER_UNAVAILABLE"},
@@ -68,8 +72,9 @@ async def create_job(
     token = body.notion_token.get_secret_value().strip() if body.notion_token else ""
     if not token:
         raise ApiError(400, ErrorCode.MISSING_NOTION_TOKEN, "notion_token is required")
-
     state = request.app.state
+    _check_destination(body.notion_parent_id, state.settings.notion_default_parent_id)
+
     engine: AsyncEngine = state.engine
     job_id, status, created, stored_video_id = await _insert_job(
         engine, video_id, body.notion_parent_id, idempotency_key
@@ -121,6 +126,22 @@ async def create_job(
 
     log.info("job_created", job_id=str(job_id), video_id=video_id)
     return JobCreatedResponse(job_id=job_id, status=JobStatus.QUEUED, video_id=video_id)
+
+
+def _check_destination(parent_id: str | None, default_parent_id: str | None) -> None:
+    """Refuse a job PUBLISH could never publish, before it spends a day's LLM quota on notes.
+
+    The same rule as PUBLISH (worker/stages/publish.py): a given parent must be a Notion page ID
+    or link; without one, NOTION_DEFAULT_PARENT_ID is used. Whether the page exists and is shared
+    with the integration only Notion can say, at PUBLISH."""
+    if notion_id(parent_id or default_parent_id) is not None:
+        return
+    message = (
+        "notion_parent_id is not a Notion page ID or link"
+        if parent_id
+        else "no destination page: set NOTION_DEFAULT_PARENT_ID or a parent page in the extension"
+    )
+    raise ApiError(400, ErrorCode.NOTION_PARENT_NOT_FOUND, message)
 
 
 async def _insert_job(

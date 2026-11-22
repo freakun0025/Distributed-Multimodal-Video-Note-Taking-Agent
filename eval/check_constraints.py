@@ -1,7 +1,7 @@
 """Automatic Constraint A/B checks on finished jobs, no LLM (Spec §7, §9; ARCHITECTURE §14, O-5).
 
     make check-constraints                  the newest successful job of each video in videos.json
-    make check-constraints jobs="<id> <id>" these jobs
+    make check-constraints ids="<id> <id>"  these jobs
 
 Constraint A, over every job in the database: no job longer than MAX_VIDEO_SECONDS succeeded or
 reached the LLM (each one FAILED with VIDEO_TOO_LONG and has no synthesis.json), and every job

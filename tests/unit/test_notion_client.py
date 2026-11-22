@@ -7,8 +7,9 @@ import pytest
 import respx
 
 from common.errors import ErrorCode, ExternalApi, PermanentError, RetryableError
+from common.notion_ids import notion_id
 from tests.unit.fakes import FakeLimiter
-from worker.clients.notion import MAX_CHILDREN, NotionClient, notion_id
+from worker.clients.notion import MAX_CHILDREN, NotionClient
 
 BASE = "https://notion.test"
 API = f"{BASE}/v1"

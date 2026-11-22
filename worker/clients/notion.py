@@ -8,7 +8,6 @@ Pages are found by listing the parent's children, never with the search API (inv
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import TracebackType
@@ -23,22 +22,12 @@ from common.limiter import Limiter
 API = ExternalApi.NOTION
 MAX_CHILDREN = 100  # blocks per append request (Notion request limits)
 _PAGE_SIZE = 100
-_HEX_RUN = re.compile(r"[0-9a-f]{32,}")
 
 
 @dataclass(frozen=True)
 class NotionPage:
     id: str
     url: str
-
-
-def notion_id(raw: str | None) -> str | None:
-    """A page ID from what a user pastes: the bare ID, the dashed UUID or the page's URL
-    (whose last 32 hex characters are the ID); None if there is none."""
-    if not raw:
-        return None
-    runs = _HEX_RUN.findall(raw.strip().lower().replace("-", ""))
-    return runs[-1][-32:] if runs else None  # "Facade-<id>": the ID is the last 32
 
 
 class NotionApi(Protocol):
