@@ -1,0 +1,49 @@
+# Lint, type checks, unit and extension tests on every push and pull request (no network, no
+# Docker). Integration tests need the Compose stack with fakes: run them locally (make itest).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      UV_PROJECT_ENVIRONMENT: .venv
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install ffmpeg (frame-grab tests)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Install dependencies
+        run: uv sync --locked --python 3.12
+      - name: Lint and type check (make lint)
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run mypy --strict common
+          uv run mypy gateway worker stt fakes chaos eval migrations tests
+      - name: Unit tests (make test)
+        run: uv run pytest tests/unit
+
+  extension:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Extension tests (make test-ext)
+        run: node --test tests/extension/*.test.mjs
