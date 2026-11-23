@@ -1,0 +1,18 @@
+REST API, Constraint A and dead-letter checks against the final images, 23 November 2026.
+Real YouTube; Notion pointed at the fake service; no LLM call is made by these checks.
+
+[PASS] GET /healthz reports all dependencies  ({'gateway': 'ok', 'postgres': 'ok', 'rabbitmq': 'ok', 'redis': 'ok'})
+[PASS] invalid URL: 4xx with {error:{code,message}}  (400 INVALID_URL)
+[PASS] missing token: 4xx  (400 MISSING_NOTION_TOKEN)
+[PASS] unusable destination: 400 before any work  (400 NOTION_PARENT_NOT_FOUND)
+[PASS] GET /jobs/{unknown} = 404
+[PASS] GET /jobs/{unknown}/results = 404
+[PASS] POST /jobs = 202 with Location and QUEUED  (202 /jobs/9b79934a-d596-4128-afe5-97da481ab88a)
+[PASS] Constraint A: real 45:38 video rejected  (FAILED VIDEO_TOO_LONG in 5.1 s)
+[PASS] polling does not change the job
+[PASS] results before terminal = 409  (409 JOB_NOT_TERMINAL)
+[PASS] unavailable video ends DEAD_LETTERED  (DEAD_LETTERED after 131 s)
+[PASS] job showed as waiting between retries
+[PASS] results after terminal = 200  (200)
+
+13 of 13 checks passed

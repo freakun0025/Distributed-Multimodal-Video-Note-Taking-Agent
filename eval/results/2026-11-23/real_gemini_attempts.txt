@@ -1,0 +1,16 @@
+Real jobs on the final images, 23 November 2026 (19:50 video, submitted with the extension's button).
+Real YouTube and real Gemini; Notion pointed at the fake service. Times are UTC.
+Gemini answered 503 (high demand) on all three models, so no job reached the frame stage.
+
+submitted | job | status | error code | finished
+13:48:37 | 8f5af486 | DEAD_LETTERED | UPSTREAM_ERROR | 13:54:07
+14:03:20 | 5cf9c72d | DEAD_LETTERED | UPSTREAM_ERROR | 14:10:10
+14:13:10 | 55a87821 | DEAD_LETTERED | RATE_LIMITED | 14:16:27
+14:17:49 | c92d55f5 | DEAD_LETTERED | RATE_LIMITED | 14:22:17
+
+Frame path checked separately in the same image, without the LLM (real YouTube download, ffmpeg):
+real download ok: 16 MB, 1280,720, 10.2 s, user=10001
+  frame at 60s: 90 kB, JPEG=True
+  frame at 446s: 68 kB, JPEG=True
+  frame at 1100s: 75 kB, JPEG=True
+frames ok: 3/3

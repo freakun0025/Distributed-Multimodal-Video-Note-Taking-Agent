@@ -354,11 +354,11 @@ two workers and Gemini's free tier. The raw outputs are in
 | End-to-end latency, 19:30 video, alone | 2 min 9 s from submission to finished page (transcript 7 s, notes 95 s including one 10 s retry, frames 18 s, publishing 10 s) |
 | Burst of 6 different videos, real YouTube and Gemini | 6 of 6 completed, queue drained in 7 min 12 s, **0 LLM 429 responses** (one 503 from Gemini was retried) |
 | Burst of 6 on the fake APIs (Gemini limited to 5 calls per minute) | 2 workers: 1 min 51 s; 4 workers: 2 min 13 s; 0 LLM 429s in both. The LLM limit, not the worker count, sets the pace |
-| Worker killed (SIGKILL) during publishing, after the Notion page was created | Message redelivered to the other worker after 0.17 s, job finished 8.1 s after the kill, one Notion page |
+| Worker killed (SIGKILL) during publishing, after the Notion page was created | Message reached the other worker less than 0.17 s after the kill, job finished about 8 s later, one Notion page |
 | Dead-letter queue | A video that does not exist was retried after 10, 30 and 90 s and dead-lettered 144 s after submission |
 | Constraint A | A real 45:38 lecture was rejected with `VIDEO_TOO_LONG` within seconds, without any LLM call |
 | Constraint B, 8 videos (7 fixed, 1 held out), 38 frames | Every frame has a caption and a reason, decodes as a JPEG, and matches the frame the model saw at that second (perceptual hash within 0 to 11 of 64 bits, against a median of 16 to 36 bits for other moments of the same video) |
-| LLM-as-judge on the same 8 videos | 37 of 38 captions match their picture; faithfulness, coverage, structure and question quality scored 5 of 5 on all eight |
+| LLM-as-judge on the same 8 videos | 37 of 38 captions match their picture (36 of 38 counting one rejection by a stricter model); faithfulness, coverage, structure and question quality scored 5 of 5 on all eight. All eight final verdicts came from Flash-Lite, the most lenient judge we tried |
 
 The evaluation also led to changes. Two burst jobs had lost their candidate frames to a refused
 YouTube download and written captions from the transcript alone, so that download is now retried
@@ -388,7 +388,7 @@ now rule out each of these.
 
 ```bash
 git clone <repository-url> && cd <repository-folder>
-cp .env.example .env            # fill in the four values above
+cp .env.example .env            # fill in the five values above
 docker compose up -d --build    # or: make up
 curl localhost:8000/healthz     # {"gateway":"ok","postgres":"ok","rabbitmq":"ok","redis":"ok"}
 ```
@@ -442,7 +442,7 @@ a comment. Only the first group has to be filled in; all others have working def
 | `LLM_PROVIDER` | `gemini` | LLM provider (Gemini is the implemented provider) |
 | `LLM_CHAIN` | `gemini-3.6-flash:low:90,gemini-3.8-flash:low:120,gemini-3.5-flash-lite:medium:60` | Model names in order of preference, as `model:thinking-level:timeout-seconds` |
 | `LLM_RPM`, `LLM_BURST` | `4`, `1` | The configured LLM rate limit for all workers together; together they admit at most five calls in any minute |
-| `LLM_TPM` | `200000` | Token budget per minute |
+| `LLM_TPM` | `200000` | Reserved for a token budget. Not enforced: the limiter counts requests |
 | `LIMITER_MAX_WAIT_S` | `20` | Longest wait for a token before the stage is moved to a delay queue |
 
 **Broker and other connections**
@@ -515,8 +515,9 @@ tests on every push and pull request. The integration tests need the Compose sta
 The integration tests run the real gateway, broker, database, Redis and workers. They cover every
 stage, a 429 from each external API, retries and backoff, the DLQ, partial and total frame
 failure, over-long videos, a worker killed in each stage, the publish lock, and a burst of six
-jobs with zero LLM 429s. Current state: 572 unit tests, 72 extension tests and 64 integration
-tests, all passing.
+jobs with zero LLM 429s. Current state: 575 unit tests (three need ffmpeg and are skipped without
+it), 72 extension tests and 64 integration tests, all passing. The outputs of the final run on the
+submitted code are in [`eval/results/2026-11-23/`](eval/results/2026-11-23/).
 
 Failure injection on the fake APIs:
 

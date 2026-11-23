@@ -5,7 +5,6 @@ event-loop timer jitter can't make them flaky.
 """
 
 import asyncio
-import itertools
 import os
 from collections.abc import AsyncIterator
 from uuid import uuid4
@@ -20,6 +19,7 @@ pytestmark = pytest.mark.integration
 
 REDIS_URL = os.environ.get("ITEST_REDIS_URL", "redis://127.0.0.1:6380/0")
 TOLERANCE_S = 0.03  # time between requests issued "together", plus rounding to whole ms
+ROUNDING_S = 0.003  # the script works in whole milliseconds
 
 
 @pytest.fixture
@@ -36,6 +36,10 @@ def prefix() -> str:
 
 def _limiter(redis: Redis, prefix: str, bucket: Bucket, max_wait_s: float = 5) -> RateLimiter:
     return RateLimiter(redis, {ExternalApi.LLM: bucket}, max_wait_s, key_prefix=prefix)
+
+
+async def _no_sleep(_seconds: float) -> None:
+    return None
 
 
 async def _redis_now(redis: Redis) -> float:
@@ -68,18 +72,39 @@ async def test_the_burst_passes_at_once_then_calls_are_spaced_at_the_rate(
 async def test_workers_sharing_redis_are_served_in_turn_at_the_rate(
     redis: Redis, prefix: str
 ) -> None:
-    # Three limiters on three connections = three workers; eight calls arrive at once.
+    # Three limiters on three connections = three workers; eight calls arrive close together.
+    slot_s = 0.5
     clients = [Redis.from_url(REDIS_URL) for _ in range(3)]
     try:
-        limiters = [_limiter(c, prefix, Bucket(rate_per_s=5, capacity=1)) for c in clients]
-        waits = await asyncio.gather(*(limiters[i % 3].acquire(ExternalApi.LLM) for i in range(8)))
+        for attempt in range(5):
+            limiters = [
+                RateLimiter(
+                    c,
+                    {ExternalApi.LLM: Bucket(rate_per_s=1 / slot_s, capacity=1)},
+                    max_wait_s=5,
+                    key_prefix=f"{prefix}{attempt}:",
+                    sleep=_no_sleep,  # only the booked waits matter here
+                )
+                for c in clients
+            ]
+            started = await _redis_now(redis)
+            waits = await asyncio.gather(
+                *(limiters[i % 3].acquire(ExternalApi.LLM) for i in range(8))
+            )
+            spread_s = await _redis_now(redis) - started
+            # Redis runs in Docker's VM, whose clock can step (even backwards): measure again.
+            if 0 <= spread_s < slot_s:
+                break
+        else:
+            pytest.fail("Redis's clock kept stepping during the measurement")
     finally:
         await asyncio.gather(*(c.aclose() for c in clients))
     booked = sorted(waits)
     assert booked[0] == 0
-    # One slot every 1/rate seconds, no two calls in the same slot.
-    for earlier, later in itertools.pairwise(booked):
-        assert 0.2 - TOLERANCE_S <= later - earlier <= 0.2 + TOLERANCE_S
+    # A wait is measured from the call's own arrival: the n-th call gets the n-th slot, less however
+    # late it arrived. Two calls sharing a slot would fall below this bound.
+    for turn, wait in enumerate(booked):
+        assert turn * slot_s - spread_s - ROUNDING_S <= wait <= turn * slot_s + ROUNDING_S
 
 
 async def test_a_wait_longer_than_max_wait_books_nothing(redis: Redis, prefix: str) -> None:
